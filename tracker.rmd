@@ -1,0 +1,530 @@
+---
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# =========================================================================
+
+# Interactive Crypto Dashboard - R Shiny App
+
+# =========================================================================
+
+# Tab 1: Near Real-Time Price View (Polling Binance API Ticker)
+
+# Tab 2: Historical Price Forecasting (auto.arima using Yahoo Finance)
+
+# =========================================================================
+
+# --- Load Necessary Libraries ---
+
+# Ensure these are installed: install.packages(c("shiny", "quantmod", "forecast", "ggplot2", "dplyr", "lubridate", "xts", "httr2", "jsonlite"))
+
+library(shiny) \# Web app framework library(quantmod) \# Fetching
+historical financial data (Yahoo) library(forecast) \# Forecasting
+functions (auto.arima, forecast) library(ggplot2) \# Plotting utilities
+(used by autoplot) library(dplyr) \# Data manipulation utilities
+library(lubridate) \# Date/time manipulation library(xts) \# Time series
+objects library(httr2) \# Making HTTP requests (for Binance API)
+library(jsonlite) \# Parsing JSON data (from Binance API)
+
+# --- Configuration ---
+
+# Symbols for UI dropdown (User-friendly names mapped to Yahoo Finance symbols for Tab 2)
+
+crypto_symbols_yahoo \<- c( "Bitcoin (BTC-USD)" = "BTC-USD", "Ethereum
+(ETH-USD)" = "ETH-USD", "Ripple (XRP-USD)" = "XRP-USD", "Litecoin
+(LTC-USD)" = "LTC-USD", "Cardano (ADA-USD)" = "ADA-USD", "Solana
+(SOL-USD)" = "SOL-USD", "Dogecoin (DOGE-USD)" = "DOGE-USD", "Polkadot
+(DOT-USD)" = "DOT1-USD" \# Note: Yahoo symbol for Polkadot might be
+DOT1-USD or DOT-USD, verify if needed )
+
+# Mapping from Yahoo symbols (keys from above) to Binance API symbols (e.g., BTCUSDT)
+
+# Add or verify mappings as needed. Case sensitive for Binance!
+
+symbol_map_binance \<- c( "BTC-USD" = "BTCUSDT", "ETH-USD" = "ETHUSDT",
+"XRP-USD" = "XRPUSDT", "LTC-USD" = "LTCUSDT", "ADA-USD" = "ADAUSDT",
+"SOL-USD" = "SOLUSDT", "DOGE-USD" = "DOGEUSDT", "DOT1-USD" = "DOTUSDT"
+\# Assuming DOT1-USD maps to DOTUSDT )
+
+# Refresh interval for Live View (in milliseconds)
+
+# 30 seconds is reasonably frequent for Binance public tickers. Increase if rate limited.
+
+LIVE_REFRESH_INTERVAL \<- 30000 \# 30 seconds
+
+# How much historical data (in minutes) to display on the live chart
+
+LIVE_CHART_WINDOW_MINUTES \<- 60 \# Show last 1 hour
+
+# Binance API Endpoint for single ticker price
+
+BINANCE_API_URL \<- "<https://api.binance.com/api/v3/ticker/price>"
+
+# --- Debug Configuration ---
+
+# Set to TRUE to enable detailed debugging output
+
+DEBUG_MODE \<- TRUE
+
+# --- User Interface (UI) Definition ---
+
+ui \<- fluidPage( titlePanel("Crypto Dashboard: Live View &
+Forecasting"),
+
+```         
+sidebarLayout(
+    # --- Sidebar with Controls ---
+    sidebarPanel(
+        width = 3,
+        h4("Global Selections"),
+
+        # Dropdown uses Yahoo symbols list (keys are user-friendly names)
+        selectInput(inputId = "symbol_selected",
+                    label = "Select Cryptocurrency:",
+                    choices = crypto_symbols_yahoo,
+                    selected = "BTC-USD"),
+
+        hr(),
+        p(strong("Data Source (Live):"), "Binance API (Ticker)"),
+        p(strong("Data Source (Forecast):"), "Yahoo Finance"),
+        p(em("Live view polls data approx. every", LIVE_REFRESH_INTERVAL/1000, "sec.")),
+        p(em("Live chart shows accumulated data for approx. last", LIVE_CHART_WINDOW_MINUTES, "min.")),
+        p(em("Forecast uses historical daily data."))
+    ), # End sidebarPanel
+
+    # --- Main Panel with Tabs ---
+    mainPanel(
+        width = 9,
+        tabsetPanel(
+            id = "main_tabs",
+
+            # --- Tab 1: Live View (Using Binance Data) ---
+            tabPanel("Live View",
+                     fluidRow(
+                         column(6,
+                                h4("Latest Available Price (Binance)"),
+                                wellPanel( style = "background-color: #f8f9fa;",
+                                           uiOutput("livePriceUI"), # Use UI output for dynamic content/errors
+                                           div(textOutput("liveTime"), style = "font-size: small; color: grey;")
+                                )
+                         ),
+                         column(6,
+                                h4("Recent Movement (vs Previous Point)"),
+                                wellPanel( style = "background-color: #f8f9fa;",
+                                           uiOutput("liveChangeInfoUI") # Use UI output for HTML/errors
+                                )
+                            )
+                     ), # End fluidRow for price boxes
+                     hr(),
+                     h4(textOutput("livePlotTitle")), # Dynamic plot title
+                     plotOutput("livePlot", height="350px"), # Plot output area
+                     # Conditional Debug Panel
+                     conditionalPanel(
+                         condition = "output.debugEnabled == true", # Check the output value
+                         hr(),
+                         h4("Debug Log"),
+                         verbatimTextOutput("debugOutput")
+                     )
+            ), # End tabPanel "Live View"
+
+            # --- Tab 2: Historical Forecast (Using Yahoo Data) ---
+            tabPanel("Historical Forecast",
+                     h4("Configure Forecast Parameters"),
+                     # Sliders for historical data range and forecast horizon
+                     fluidRow(
+                         column(6,
+                                sliderInput(inputId = "hist_days",
+                                            label = "Historical Data Period (Days):",
+                                            min = 60, max = 1095, value = 365, step = 15)
+                         ),
+                         column(6,
+                                sliderInput(inputId = "horizon",
+                                            label = "Forecast Horizon (Days):",
+                                            min = 7, max = 180, value = 30, step = 1)
+                         )
+                     ), # End fluidRow for sliders
+                     # Button to trigger forecast generation
+                     actionButton(inputId = "run_forecast",
+                                  label = "Generate Historical Forecast",
+                                  icon = icon("chart-line"),
+                                  class = "btn-primary"),
+                     hr(),
+                     h4(textOutput("forecastPlotTitle")), # Dynamic title for forecast plot
+                     plotOutput(outputId = "forecastPlot", height = "450px"), # Forecast plot output
+                     hr(),
+                     h4("Forecast Model Summary (auto.arima)"),
+                     verbatimTextOutput(outputId = "forecastSummary") # Model summary output
+            ) # End tabPanel "Historical Forecast"
+
+        ) # End tabsetPanel
+    ) # End mainPanel
+) # End sidebarLayout
+```
+
+) \# End fluidPage (UI)
+
+# --- Server Logic Definition ---
+
+server \<- function(input, output, session) {
+
+```         
+# --- Enable Debug Output Panel Condition ---
+output$debugEnabled <- reactive({ DEBUG_MODE })
+outputOptions(output, "debugEnabled", suspendWhenHidden = FALSE)
+
+# --- Debug Logging Setup ---
+debug_messages <- reactiveVal(character(0))
+debug_log <- function(msg, ...) {
+    if (DEBUG_MODE) {
+        full_msg <- paste(sprintf(msg, ...))
+        timestamp <- format(Sys.time(), "[%Y-%m-%d %H:%M:%OS3]")
+        log_msg <- paste(timestamp, full_msg)
+        current_msgs <- isolate(debug_messages())
+        new_msgs <- c(current_msgs, log_msg)
+        if (length(new_msgs) > 100) {
+            new_msgs <- new_msgs[-(1:(length(new_msgs) - 100))]
+        }
+        debug_messages(new_msgs)
+        cat(log_msg, "\n")
+    }
+}
+output$debugOutput <- renderPrint({
+    cat("--- DEBUG LOG (Most Recent First) ---\n")
+    cat(paste(rev(debug_messages()), collapse = "\n"))
+})
+# --- End Debug Logging Setup ---
+
+# === Live View Logic (Binance API Accumulation Method) ===
+initial_empty_xts <- xts(matrix(numeric(0), ncol = 1, dimnames = list(NULL, "Price")),
+                         order.by = Sys.time()[0], tzone = "UTC")
+live_xts_data <- reactiveVal(initial_empty_xts)
+
+auto_refresh_timer <- reactiveTimer(intervalMs = LIVE_REFRESH_INTERVAL)
+selected_yahoo_symbol <- reactive({ input$symbol_selected })
+
+observeEvent(selected_yahoo_symbol(), {
+    debug_log("Symbol changed to '%s' - Resetting live data", selected_yahoo_symbol())
+    initial_empty_xts_reset <- xts(matrix(numeric(0), ncol = 1, dimnames = list(NULL, "Price")),
+                                   order.by = Sys.time()[0], tzone = "UTC")
+    live_xts_data(initial_empty_xts_reset)
+})
+
+# --- OBSERVE EVENT - Fetching and Updating Live Data ---
+observeEvent(auto_refresh_timer(), {
+    yahoo_symbol <- isolate(selected_yahoo_symbol())
+    binance_symbol <- symbol_map_binance[yahoo_symbol]
+
+    if (is.null(binance_symbol) || is.na(binance_symbol) || !nzchar(binance_symbol)) {
+        debug_log("Error: No Binance mapping for symbol: '%s'", yahoo_symbol); return()
+    }
+
+    # Simplified logging for normal operation
+    # debug_log("Timer triggered - Fetching Binance for: '%s'", binance_symbol)
+    temp_final_data <- NULL
+    error_occurred_flag <- FALSE
+
+    tryCatch({
+        current_data <- isolate(live_xts_data())
+        if (is.null(current_data)) stop("FATAL: isolate(live_xts_data()) returned NULL!")
+
+        # --- API Fetch, Parse, Create Point ---
+        api_fetch_time <- Sys.time()
+        url <- paste0(BINANCE_API_URL, "?symbol=", binance_symbol)
+        req <- request(url)
+        resp <- req %>% req_timeout(seconds = 10) %>% req_perform()
+
+        if (resp_status(resp) != 200) {
+            resp_text <- tryCatch(resp_body_string(resp), error=function(e)"[Read Body Err]")
+            stop(paste("API Error:", resp_status(resp), "-", resp_text))
+        }
+        json_data <- resp %>% resp_body_json()
+        price_val <- json_data$price
+        if (is.null(price_val)) stop("Price NULL in response.")
+        price_num <- suppressWarnings(as.numeric(price_val))
+        if (length(price_num) == 0 || is.na(price_num) || !is.finite(price_num)) {
+            stop(paste("Price non-numeric or NA/Inf:", price_val))
+        }
+        timestamp_utc <- as.POSIXct(api_fetch_time, tz = "UTC")
+        if (length(timestamp_utc) == 0 || is.na(timestamp_utc)) stop("Bad UTC timestamp generated.")
+        price_matrix <- matrix(price_num, ncol = 1)
+        latest_point <- xts(price_matrix, order.by = timestamp_utc, tzone = "UTC")
+        colnames(latest_point) <- "Price"
+        if (!inherits(latest_point, "xts") || nrow(latest_point) != 1 || !"Price" %in% colnames(latest_point)) {
+            stop("Created latest_point is not a valid 1-row xts object.")
+        }
+        debug_log("Fetched %s = %s @ %s", binance_symbol, price_num, format(timestamp_utc,"%H:%M:%OS3"))
+
+        current_nrow <- tryCatch(nrow(current_data), error = function(e) {
+                             debug_log("!!! Error getting nrow(). Data structure:"); str(current_data);
+                             stop(paste("Failed get nrow:", e$message)) })
+
+        # --- Determine Append ---
+        should_append <- FALSE
+        if (current_nrow == 0) {
+            should_append <- TRUE
+            debug_log("Append: Yes (first point)")
+        } else {
+            # --- FIX START: Reliable Timestamp Comparison ---
+            last_index_current <- NULL
+            new_index <- tryCatch(index(latest_point), error=function(e) NULL) # Index of the new point
+
+            # Get the index vector of the existing data
+            idx_current <- tryCatch(index(current_data), error=function(e) {
+                debug_log("!!! Error getting index vector from current_data: %s", e$message)
+                NULL
+            })
+
+            # Get the *last* timestamp from the existing index vector
+            if (!is.null(idx_current) && length(idx_current) > 0) {
+                 last_index_current <- tryCatch(last(idx_current), error=function(e) { # Use last() on the vector
+                     debug_log("!!! Error getting last element of index vector: %s", e$message)
+                     NULL
+                 })
+            }
+
+            # debug_log("Timestamp Comparison Check (FIXED):") # Less verbose now
+            # debug_log("  last_index_current: %s (class: %s, length: %d, is.na: %s)",
+            #           if(!is.null(last_index_current)) format(last_index_current,"%Y-%m-%d %H:%M:%OS6") else "NULL",
+            #           if(!is.null(last_index_current)) class(last_index_current)[1] else "NULL",
+            #           if(!is.null(last_index_current)) length(last_index_current) else -1,
+            #           if(!is.null(last_index_current)) paste(is.na(last_index_current), collapse=",") else "N/A")
+            # debug_log("  new_index: %s (class: %s, length: %d, is.na: %s)",
+            #           if(!is.null(new_index)) format(new_index,"%Y-%m-%d %H:%M:%OS6") else "NULL",
+            #           if(!is.null(new_index)) class(new_index)[1] else "NULL",
+            #           if(!is.null(new_index)) length(new_index) else -1,
+            #           if(!is.null(new_index)) paste(is.na(new_index), collapse=",") else "N/A")
+
+            # Check conditions explicitly (Length MUST be 1 for both now)
+            cond_last_ok <- !is.null(last_index_current) && inherits(last_index_current, "POSIXct") && length(last_index_current) == 1 && !is.na(last_index_current)
+            cond_new_ok <- !is.null(new_index) && inherits(new_index, "POSIXct") && length(new_index) == 1 && !is.na(new_index)
+
+            # debug_log("  Conditions Valid: last_ok=%s, new_ok=%s", cond_last_ok, cond_new_ok) # Less verbose
+
+            if (cond_last_ok && cond_new_ok) {
+                if (new_index > last_index_current) {
+                    should_append <- TRUE
+                    debug_log("Append Decision: Yes (new point is newer)")
+                } else {
+                    debug_log("Append Decision: No (new point not newer or same time)")
+                }
+            } else {
+                debug_log("Append Decision: No (Timestamp comparison failed - invalid index data)")
+                if (!cond_last_ok) debug_log("  Reason: last_index_current failed validation.")
+                if (!cond_new_ok) debug_log("  Reason: new_index failed validation.")
+                should_append <- FALSE
+            }
+            # --- FIX END: Reliable Timestamp Comparison ---
+        }
+
+        # --- Define Window ---
+        window_start_time_utc <- Sys.time() - minutes(LIVE_CHART_WINDOW_MINUTES)
+        window_start_time_utc <- as.POSIXct(format(window_start_time_utc, tz="UTC", usetz=TRUE), tz="UTC")
+        if(length(window_start_time_utc)==0 || is.na(window_start_time_utc)) stop("Bad window start time.")
+
+        # --- Calculate Final Data (Append/Trim) ---
+        calculated_final_data <- NULL
+        if (should_append) {
+            updated_data <- tryCatch(rbind(current_data, latest_point), error = function(e) {
+                debug_log("!!! Error during rbind: %s", e$message); NULL })
+            if (is.null(updated_data) || !inherits(updated_data, "xts")) {
+                 stop("rbind failed or returned non-xts object.") }
+
+            idx_updated <- tryCatch(index(updated_data), error=function(e)NULL)
+             if(inherits(idx_updated,"POSIXct") && length(idx_updated) == nrow(updated_data)){
+                 calculated_final_data <- updated_data[idx_updated >= window_start_time_utc, ]
+                 debug_log("Trim after append successful. Rows now: %d", nrow(calculated_final_data))
+             } else {
+                 debug_log("!!! Warning: Index invalid after append. Cannot trim reliably. Using untrimmed appended data.")
+                 calculated_final_data <- updated_data
+             }
+        } else { # No append, just trim existing
+            if (current_nrow > 0) {
+                idx_current <- tryCatch(index(current_data), error=function(e)NULL)
+                if(inherits(idx_current,"POSIXct") && length(idx_current) == nrow(current_data)){
+                    trimmed_data <- current_data[idx_current >= window_start_time_utc, ]
+                    if (nrow(trimmed_data) != nrow(current_data)) {
+                         debug_log("Trim successful (no append). Rows changed from %d to %d", nrow(current_data), nrow(trimmed_data))
+                    }
+                    calculated_final_data <- trimmed_data
+                } else {
+                    debug_log("!!! Warning: Index invalid on existing data. Cannot trim reliably.")
+                    calculated_final_data <- current_data
+                }
+            } else { calculated_final_data <- current_data }
+        }
+
+        if (inherits(calculated_final_data, "xts")) {
+             temp_final_data <- calculated_final_data
+        } else { stop("Internal Error: Calculated final data is not an xts object.") }
+
+    }, error = function(e) {
+        error_occurred_flag <<- TRUE
+        debug_log(">>> Error caught during live data processing for %s : %s", binance_symbol, e$message)
+    })
+
+    # --- Update Step ---
+    if (!error_occurred_flag && !is.null(temp_final_data) && inherits(temp_final_data, "xts")) {
+         if (!identical(isolate(live_xts_data()), temp_final_data)) {
+             live_xts_data(temp_final_data)
+             # Simplified update log
+             # debug_log("Update: Success - live_xts_data updated. Rows: %d", nrow(temp_final_data))
+         }
+    } else if (error_occurred_flag) {
+        debug_log("Update: Skipped (due to error during processing).")
+    } else {
+        debug_log("Update: Skipped (processed data invalid or NULL, but no error explicitly caught).")
+    }
+}) # End observeEvent(auto_refresh_timer)
+
+
+# --- Reactive for Live Calculations ---
+live_values_reactive <- reactive({
+    data <- live_xts_data()
+    results <- list( price = NA_real_, time = NA, price_str = "Waiting...", change_html = "<span>Waiting...</span>", error_msg = NULL )
+
+    tryCatch({
+        req(inherits(data, "xts"), nrow(data) >= 1, "Price" %in% colnames(data))
+
+        last_observation <- tryCatch(last(data), error = function(e) { NULL })
+        req(!is.null(last_observation), inherits(last_observation, "xts"), nrow(last_observation) == 1)
+
+        # --- FIX START: Reliable Index Extraction ---
+        results_time <- NULL
+        # Get index vector of the (already isolated) last observation
+        idx_last_obs <- tryCatch(index(last_observation), error = function(e) {
+             debug_log("!!! Error getting index vector from last_observation: %s", e$message)
+             NULL
+        })
+        # Get the last (and only) element of this vector
+        if (!is.null(idx_last_obs) && length(idx_last_obs) > 0) {
+             results_time <- tryCatch(last(idx_last_obs), error=function(e) { # Use last() on the vector
+                 debug_log("!!! Error getting last element of last_observation index vector: %s", e$message)
+                 NULL
+             })
+        }
+
+        # debug_log("live_values_reactive: Value of results_time (FIXED): %s", paste(capture.output(results_time), collapse=" ")) # Less verbose
+        # debug_log("live_values_reactive: class: %s, length: %d, is.na: %s", # Less verbose
+        #             if(!is.null(results_time)) class(results_time)[1] else "NULL",
+        #             if(!is.null(results_time)) length(results_time) else "NULL",
+        #             if(!is.null(results_time)) paste(is.na(results_time), collapse=",") else "NULL")
+
+        # Validation check (Length MUST be 1)
+        req(inherits(results_time, "POSIXct"), length(results_time) == 1, !is.na(results_time), msg = "Invalid time index extracted")
+        results$time <- results_time
+        # --- FIX END: Reliable Index Extraction ---
+
+        last_price_val <- tryCatch(
+            as.numeric(coredata(last_observation)[1, "Price"]),
+            warning = function(w) { debug_log("Warn price: %s", w$message); NA_real_ },
+            error = function(e) { debug_log("Err price: %s", e$message); NA_real_ }
+        )
+        req(is.numeric(last_price_val), length(last_price_val) == 1, !is.na(last_price_val), is.finite(last_price_val), msg = "Invalid price value extracted")
+        results$price <- last_price_val
+
+        price_decimals <- ifelse(results$price < 0.01, 6, ifelse(results$price < 10, 4, 2))
+        results$price_str <- format(round(results$price, price_decimals), nsmall = price_decimals, big.mark = ",")
+
+        # --- Change Calculation ---
+        if(nrow(data) >= 2) {
+            prev_price <- tryCatch(as.numeric(coredata(data[nrow(data)-1, "Price"])), error = function(e) NA_real_)
+            if(is.finite(prev_price) && prev_price != 0 && is.finite(results$price)) {
+                change_val <- results$price - prev_price
+                change_pct <- (change_val / prev_price) * 100
+                change_color <- if (change_val > 0) "green" else if (change_val < 0) "red" else "grey"
+                change_sign <- if (change_val >= 0) "+" else "" # Include sign for 0 change too? Or keep neutral?
+
+                results$change_html <- sprintf("<span style='color:%s; font-weight:bold;'>%s%.*f (%s%.2f%%)</span>",
+                                             change_color, change_sign, price_decimals, abs(change_val),
+                                             change_sign, abs(change_pct))
+            } else { results$change_html <- "<span>Change N/A</span>" }
+        } else { results$change_html <- "<span>Need 2+ points</span>" }
+
+    }, error = function(e) {
+         debug_log(">>> Error INSIDE live_values_reactive tryCatch: %s", e$message)
+         results$error_msg <- paste("Calc Error:", e$message)
+         results$price_str <- "Error"
+         results$change_html <- "<span style='color:red;'>Error</span>"
+    })
+    return(results)
+})
+
+
+# --- UI Outputs ---
+output$livePriceUI <- renderUI({
+    values <- live_values_reactive()
+    req(values)
+    if (!is.null(values$error_msg)) {
+         div(style = "color: red; background-color: #fee; border: 1px solid red; padding: 5px; border-radius: 4px;",
+            strong("Error:"), values$price_str, "-", values$error_msg) # Display specific req() error
+    } else {
+        h3(values$price_str)
+    }
+})
+
+output$liveTime <- renderText({
+    values <- live_values_reactive()
+    if (inherits(values$time, "POSIXct") && !is.na(values$time)) {
+        paste("As of:", format(values$time, "%Y-%m-%d %H:%M:%S %Z"))
+    } else { "Time: N/A" }
+})
+
+output$liveChangeInfoUI <- renderUI({ HTML(live_values_reactive()$change_html) })
+
+# --- Live Plot Output ---
+output$livePlotTitle <- renderText({
+    paste("Recent Price Trend for", selected_yahoo_symbol(), "(Binance, approx. last", LIVE_CHART_WINDOW_MINUTES, "min)")
+})
+
+output$livePlot <- renderPlot({
+    data_to_plot <- live_xts_data()
+    req(inherits(data_to_plot, "xts"), "Price" %in% colnames(data_to_plot))
+
+    # Allow plot even with 1 point, but handle chartSeries limitation
+    if(nrow(data_to_plot) == 0) {
+         plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+         title(main = "Waiting for data...", col.main = "grey")
+         return() # Exit renderPlot early
+    }
+
+    # debug_log("Rendering live plot with %d points.", nrow(data_to_plot)) # Less verbose
+
+    tryCatch({
+         plot_title <- paste("Live Price:", selected_yahoo_symbol())
+         if(nrow(data_to_plot) < 2) {
+             # chartSeries fails with 1 point, use base plot
+             plot(index(data_to_plot), coredata(data_to_plot$Price), type='p', pch=19, # Plot point
+                  xlab="Time (UTC)", ylab="Price", main=paste(plot_title, "(1 point)"))
+             grid()
+         } else {
+             suppressWarnings({ # Suppress periodicity warnings
+                 chartSeries(data_to_plot, name = "", # Removed name to avoid redundancy with title
+                             theme = chartTheme("white"), TA = NULL,
+                             major.ticks = 'auto', minor.ticks = FALSE )
+             })
+             title(main = plot_title) # Add title via base graphics
+         }
+
+    }, error = function(e) {
+        debug_log("!!! Live Plot Error: %s", e$message)
+        plot(1, type = "n", axes = FALSE, xlab = "", ylab = "")
+        title(main = "Error Generating Live Plot", col.main = "red")
+        text(1, 1, paste("Could not plot data.\nError:", e$message), col = "red", cex = 1.2)
+    })
+})
+
+# === Historical Forecast Logic (Unchanged) ===
+historical_data_reactive<-eventReactive(input$run_forecast,{selected_symbol<-selected_yahoo_symbol();history_duration<-input$hist_days;start_date<-Sys.Date()-days(history_duration);id<-showNotification(paste("Fetching historical (Yahoo) for",selected_symbol,"..."),duration=NULL,closeButton=FALSE,type="message");on.exit(removeNotification(id),add=TRUE);tryCatch({data<-getSymbols(selected_symbol,src="yahoo",from=start_date,auto.assign=FALSE);if(!inherits(data,"xts")||is.null(data)||nrow(data)<30)stop(paste("Insufficient historical (Yahoo)"));price_col<-if(has.Ad(data))Ad(data)else Cl(data);price_col<-price_col[!is.na(price_col[,1]),];if(nrow(price_col)<30)stop(paste("Insufficient non-NA historical (Yahoo)"));price_ts<-ts(coredata(price_col[,1]),frequency=7);showNotification(paste("Historical fetched.",nrow(price_col),"points."),duration=3,type="message");return(list(ts=price_ts,symbol=selected_symbol))},error=function(e){showNotification(paste("Hist. Data Err (Yahoo):",e$message),duration=10,type="error");debug_log("Historical fetch error: %s", e$message);return(NULL)})})
+forecast_result_reactive<-reactive({data_list<-historical_data_reactive();req(data_list);ts_data<-data_list$ts;forecast_horizon<-input$horizon;id<-showNotification(paste("Fitting forecast model (auto.arima)..."),duration=NULL,closeButton=FALSE,type="message");on.exit(removeNotification(id),add=TRUE);tryCatch({fit<-auto.arima(ts_data,seasonal=TRUE,stepwise=TRUE,approximation=TRUE);forecast_obj<-forecast(fit,h=forecast_horizon);showNotification("Forecast complete.",duration=5,type="message");debug_log("Forecast fitted");return(list(forecast=forecast_obj,fit=fit))},error=function(e){showNotification(paste("Forecast Error:",e$message),duration=10,type="error");debug_log("Forecast error: %s", e$message);return(NULL)})})
+output$forecastPlot<-renderPlot({forecast_list<-forecast_result_reactive();req(forecast_list);autoplot(forecast_list$forecast)+xlab("Time")+ylab("Price (Adj Close, USD)")+theme_minimal(base_size=14)+labs(caption="Forecast based on auto.arima fit to historical daily data (Yahoo Finance).")})
+output$forecastPlotTitle<-renderText({req(forecast_result_reactive());data_list<-historical_data_reactive();req(data_list);paste("Historical Price Forecast Plot (Yahoo Data) for:",data_list$symbol)})
+output$forecastSummary<-renderPrint({forecast_list<-forecast_result_reactive();req(forecast_list);cat("-- ARIMA Model Summary (Yahoo Data) --\n");print(summary(forecast_list$fit));cat("\n-- Forecast Values --\n");print(forecast_list$forecast)})
+```
+
+} \# End Server Logic
+
+# --- Run the Application ---
+
+shinyApp(ui = ui, server = server)
