@@ -1,109 +1,203 @@
 # =========================================================================
-
 # Interactive Crypto Dashboard - R Shiny App
-
 # =========================================================================
-
-# Version 3.5.2: Fixed BBands Calc Error & dplyr Warning
-
-# =========================================================================
-
 # Tab 1: Near Real-Time Price View
-
 # Tab 2: Historical Price Forecasting
-
 # Tab 3: Strategy Analysis (MA Crossover, RSI, MACD, BBands, ATR, Vol Confirm) + Optimization
-
 # =========================================================================
-
+#install.packages(c("shiny","quantmod","forecast","ggplot2","dplyr","lubridate","xts","httr2","jsonlite","RSQLite","DBI","TTR","plotly","PerformanceAnalytics","scales","DT","shinycssloaders"))
 # --- Load Necessary Libraries ---
-
-library(shiny) library(quantmod) library(forecast) library(ggplot2) library(dplyr) library(lubridate) library(xts) library(httr2) library(jsonlite) library(RSQLite) library(DBI) library(TTR) library(plotly) library(scales) library(PerformanceAnalytics) library(DT) library(shinycssloaders) \# For loading indicators
+library(shiny)
+library(quantmod)
+library(forecast)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(xts)
+library(httr2)
+library(jsonlite)
+library(RSQLite)
+library(DBI)
+library(TTR)
+library(plotly)
+library(scales)
+library(PerformanceAnalytics)
+library(DT)
+library(shinycssloaders) # For loading indicators
 
 # --- Configuration ---
+crypto_symbols_yahoo <- c(
+  "Bitcoin (BTC-USD)" = "BTC-USD",
+  "Ethereum (ETH-USD)" = "ETH-USD",
+  "Ripple (XRP-USD)" = "XRP-USD",
+  "Litecoin (LTC-USD)" = "LTC-USD",
+  "Cardano (ADA-USD)" = "ADA-USD",
+  "Solana (SOL-USD)" = "SOL-USD",
+  "Dogecoin (DOGE-USD)" = "DOGE-USD",
+  "Polkadot (DOT-USD)" = "DOT1-USD" # Note: Yahoo might use DOT1-USD
+)
 
-crypto_symbols_yahoo \<- c( "Bitcoin (BTC-USD)" = "BTC-USD", "Ethereum (ETH-USD)" = "ETH-USD", "Ripple (XRP-USD)" = "XRP-USD", "Litecoin (LTC-USD)" = "LTC-USD", "Cardano (ADA-USD)" = "ADA-USD", "Solana (SOL-USD)" = "SOL-USD", "Dogecoin (DOGE-USD)" = "DOGE-USD", "Polkadot (DOT-USD)" = "DOT1-USD" ) symbol_map_binance \<- c( "BTC-USD" = "BTCUSDT", "ETH-USD" = "ETHUSDT", "XRP-USD" = "XRPUSDT", "LTC-USD" = "LTCUSDT", "ADA-USD" = "ADAUSDT", "SOL-USD" = "SOLUSDT", "DOGE-USD" = "DOGEUSDT", "DOT1-USD" = "DOTUSDT" ) LIVE_REFRESH_INTERVAL \<- 30000 LIVE_CHART_WINDOW_MINUTES \<- 60 BINANCE_API_URL \<- "<https://api.binance.com/api/v3/ticker/price>" DB_FILE \<- "crypto_data.sqlite" DEBUG_MODE \<- TRUE \# Set to FALSE for production
+symbol_map_binance <- c(
+  "BTC-USD" = "BTCUSDT",
+  "ETH-USD" = "ETHUSDT",
+  "XRP-USD" = "XRPUSDT",
+  "LTC-USD" = "LTCUSDT",
+  "ADA-USD" = "ADAUSDT",
+  "SOL-USD" = "SOLUSDT",
+  "DOGE-USD" = "DOGEUSDT",
+  "DOT1-USD" = "DOTUSDT" # Map DOT1-USD to DOTUSDT
+)
+
+LIVE_REFRESH_INTERVAL <- 30000 # milliseconds (30 seconds)
+LIVE_CHART_WINDOW_MINUTES <- 60 # How many minutes of live data to show
+BINANCE_API_URL <- "https://api.binance.com/api/v3/ticker/price"
+DB_FILE <- "crypto_data.sqlite"
+DEBUG_MODE <- TRUE # Set to FALSE for production
 
 # --- Helper Functions ---
 
-connect_db \<- function(file = DB_FILE) { tryCatch({ dbConnect(RSQLite::SQLite(), file) }, error = function(e) { stop("Failed to connect to database '", file, "': ", e$message); NULL })
+connect_db <- function(file = DB_FILE) {
+  tryCatch({
+    dbConnect(RSQLite::SQLite(), file)
+  }, error = function(e) {
+    stop("Failed to connect to database '", file, "': ", e$message); NULL
+  })
 }
+
 init_db <- function(db) {
-    message("Initializing database tables if they don't exist...")
-    tryCatch({
-        dbExecute(db, "CREATE TABLE IF NOT EXISTS live_ticks (symbol_binance TEXT NOT NULL, timestamp_utc INTEGER NOT NULL, price REAL NOT NULL, PRIMARY KEY (symbol_binance, timestamp_utc)) WITHOUT ROWID;")
-        dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_ticks_timestamp ON live_ticks(timestamp_utc);")
-        dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_ticks_symbol_time ON live_ticks(symbol_binance, timestamp_utc);")
-        dbExecute(db, "CREATE TABLE IF NOT EXISTS daily_historical (symbol_yahoo TEXT NOT NULL, date TEXT NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL, adjusted REAL, PRIMARY KEY (symbol_yahoo, date)) WITHOUT ROWID;")
-        dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_historical(date);")
-        dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_daily_symbol_date ON daily_historical(symbol_yahoo, date);")
-        message("Database initialization check complete."); return(TRUE)
-    }, error = function(e) { warning("Error initializing database tables: ", e$message); return(FALSE) }) } insert_ticks_safe \<- function(db, symbol_b, timestamp_posixct, price_val) { ts_epoch \<- as.numeric(timestamp_posixct) query \<- "INSERT OR IGNORE INTO live_ticks (symbol_binance, timestamp_utc, price) VALUES (?, ?, ?)" tryCatch({ dbExecute(db, query, params = list(symbol_b, ts_epoch, price_val)); return(TRUE) }, error = function(e) { warning(sprintf("DB Error inserting tick for %s \@ %d: %s", symbol_b, ts_epoch, e$message)); return(FALSE) })
+  message("Initializing database tables if they don't exist...")
+  tryCatch({
+    dbExecute(db, "CREATE TABLE IF NOT EXISTS live_ticks (symbol_binance TEXT NOT NULL, timestamp_utc INTEGER NOT NULL, price REAL NOT NULL, PRIMARY KEY (symbol_binance, timestamp_utc)) WITHOUT ROWID;")
+    dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_ticks_timestamp ON live_ticks(timestamp_utc);")
+    dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_ticks_symbol_time ON live_ticks(symbol_binance, timestamp_utc);")
+    dbExecute(db, "CREATE TABLE IF NOT EXISTS daily_historical (symbol_yahoo TEXT NOT NULL, date TEXT NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL, adjusted REAL, PRIMARY KEY (symbol_yahoo, date)) WITHOUT ROWID;")
+    dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_historical(date);")
+    dbExecute(db, "CREATE INDEX IF NOT EXISTS idx_daily_symbol_date ON daily_historical(symbol_yahoo, date);")
+    message("Database initialization check complete."); return(TRUE)
+  }, error = function(e) { warning("Error initializing database tables: ", e$message); return(FALSE) })
 }
+
+insert_ticks_safe <- function(db, symbol_b, timestamp_posixct, price_val) {
+  ts_epoch <- as.numeric(timestamp_posixct)
+  query <- "INSERT OR IGNORE INTO live_ticks (symbol_binance, timestamp_utc, price) VALUES (?, ?, ?)"
+  tryCatch({
+    dbExecute(db, query, params = list(symbol_b, ts_epoch, price_val)); return(TRUE)
+  }, error = function(e) {
+    warning(sprintf("DB Error inserting tick for %s @ %d: %s", symbol_b, ts_epoch, e$message)); return(FALSE)
+  })
+}
+
 insert_daily_bars_safe <- function(db, bars_df) {
-    required_cols <- c("symbol_yahoo", "date", "open", "high", "low", "close", "volume", "adjusted")
-    if (!all(required_cols %in% names(bars_df))) {
-        warning(paste("DB Error: Daily bars dataframe missing required columns. Have:", paste(names(bars_df), collapse=", ")));
-        return(FALSE)
+  required_cols <- c("symbol_yahoo", "date", "open", "high", "low", "close", "volume", "adjusted")
+  if (!all(required_cols %in% names(bars_df))) {
+    warning(paste("DB Error: Daily bars dataframe missing required columns. Have:", paste(names(bars_df), collapse=", ")));
+    return(FALSE)
+  }
+  # Ensure date is character YYYY-MM-DD for SQLite compatibility
+  if (!inherits(bars_df$date, "character")) {
+    if (inherits(bars_df$date, "Date")) {
+      bars_df$date <- format(bars_df$date, "%Y-%m-%d")
+    } else {
+      warning("DB Error: Date column format not recognized for daily bars."); return(FALSE)
     }
-    if (!inherits(bars_df$date, "character")) { if (inherits(bars_df$date, "Date")) { bars_df$date \<- format(bars_df$date, "%Y-%m-%d")
-         } else { warning("DB Error: Date column format not recognized for daily bars."); return(FALSE) } }
-    query <- "INSERT OR REPLACE INTO daily_historical (symbol_yahoo, date, open, high, low, close, volume, adjusted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    success <- TRUE; dbBegin(db)
-    tryCatch({ for (i in 1:nrow(bars_df)) { dbExecute(db, query, params = list( bars_df$symbol_yahoo[i], bars_df$date[i], bars_df$open[i], bars_df$high[i], bars_df$low[i], bars_df$close[i], bars_df$volume[i], bars_df$adjusted[i] )) }; dbCommit(db)
-    }, error = function(e) { success <<- FALSE; dbRollback(db); warning(sprintf("DB Error inserting daily bars for %s: %s", bars_df$symbol_yahoo[1], e$message)) })
-    return(success)
+  }
+  
+  query <- "INSERT OR REPLACE INTO daily_historical (symbol_yahoo, date, open, high, low, close, volume, adjusted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  success <- TRUE; dbBegin(db)
+  tryCatch({
+    for (i in 1:nrow(bars_df)) {
+      dbExecute(db, query, params = list(
+        bars_df$symbol_yahoo[i], bars_df$date[i],
+        bars_df$open[i], bars_df$high[i], bars_df$low[i], bars_df$close[i],
+        bars_df$volume[i], bars_df$adjusted[i]
+      ))
+    }; dbCommit(db)
+  }, error = function(e) {
+    success <<- FALSE; dbRollback(db);
+    warning(sprintf("DB Error inserting daily bars for %s: %s", bars_df$symbol_yahoo[1], e$message))
+  })
+  return(success)
 }
+
 get_daily_bars <- function(db, symbol_y, start_date, end_date) {
-    query <- "SELECT * FROM daily_historical WHERE symbol_yahoo = ? AND date BETWEEN ? AND ? ORDER BY date"
-    tryCatch({ result <- dbGetQuery(db, query, params = list( symbol_y, format(as.Date(start_date), "%Y-%m-%d"), format(as.Date(end_date), "%Y-%m-%d") ))
-        if (nrow(result) > 0) { result$date \<- as.Date(result$date)
-        } else { result <- data.frame(symbol_yahoo=character(), date=as.Date(character()), open=numeric(), high=numeric(), low=numeric(), close=numeric(), volume=numeric(), adjusted=numeric(), stringsAsFactors = FALSE) }
-        return(result)
-    }, error = function(e) { warning(sprintf("DB Error fetching daily bars for %s (%s to %s): %s", symbol_y, start_date, end_date, e$message)) return(data.frame(symbol_yahoo=character(), date=as.Date(character()), open=numeric(), high=numeric(), low=numeric(), close=numeric(), volume=numeric(), adjusted=numeric(), stringsAsFactors = FALSE)) }) }
+  query <- "SELECT * FROM daily_historical WHERE symbol_yahoo = ? AND date BETWEEN ? AND ? ORDER BY date"
+  tryCatch({
+    result <- dbGetQuery(db, query, params = list(
+      symbol_y,
+      format(as.Date(start_date), "%Y-%m-%d"),
+      format(as.Date(end_date), "%Y-%m-%d")
+    ))
+    # Convert date back to Date object after fetching
+    if (nrow(result) > 0) {
+      result$date <- as.Date(result$date)
+    } else {
+      # Return empty df with correct structure if no data
+      result <- data.frame(symbol_yahoo=character(), date=as.Date(character()),
+                           open=numeric(), high=numeric(), low=numeric(), close=numeric(),
+                           volume=numeric(), adjusted=numeric(), stringsAsFactors = FALSE)
+    }
+    return(result)
+  }, error = function(e) {
+    warning(sprintf("DB Error fetching daily bars for %s (%s to %s): %s", symbol_y, start_date, end_date, e$message))
+    # Return empty df with correct structure on error
+    return(data.frame(symbol_yahoo=character(), date=as.Date(character()),
+                      open=numeric(), high=numeric(), low=numeric(), close=numeric(),
+                      volume=numeric(), adjusted=numeric(), stringsAsFactors = FALSE))
+  })
+}
+
 
 # --- Calculate Indicators Function ---
-
-calculate_indicators \<- function(ohlc_df, debug_log_func = NULL) { local_debug_log \<- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
-
-```         
-min_rows_needed <- 250 # For 200 SMA + buffer
-if (nrow(ohlc_df) < min_rows_needed) {
+calculate_indicators <- function(ohlc_df, debug_log_func = NULL) {
+  local_debug_log <- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
+  
+  min_rows_needed <- 250 # For 200 SMA + buffer
+  if (nrow(ohlc_df) < min_rows_needed) {
     local_debug_log("Indicator Calc: Not enough data (have %d, need %d)", nrow(ohlc_df), min_rows_needed)
     required_cols <- c("open", "high", "low", "close", "volume", "adjusted", "date")
     for(col in required_cols) { if(!col %in% names(ohlc_df)) ohlc_df[[col]] <- numeric(0) }
     if(!"date" %in% names(ohlc_df)) ohlc_df$date <- as.Date(character())
     return(ohlc_df)
-}
-tryCatch({
+  }
+  
+  tryCatch({
     local_debug_log("Indicator Calc: Processing %d rows.", nrow(ohlc_df))
     ohlc_df <- ohlc_df[order(ohlc_df$date), ]
-    req_xts_cols <- c("open", "high", "low", "close", "volume", "adjusted")
+    req_xts_cols <- c("open", "high", "low", "close", "volume", "adjusted") # Ensure lowercase
+    
     if (!all(req_xts_cols %in% names(ohlc_df))) {
-         stop(paste("Missing required OHLCV columns (lowercase expected) for indicator calculation:", paste(setdiff(req_xts_cols, names(ohlc_df)), collapse=", ")))
+      stop(paste("Missing required OHLCV columns (lowercase expected) for indicator calculation:",
+                 paste(setdiff(req_xts_cols, names(ohlc_df)), collapse=", ")))
     }
+    
+    # Ensure columns are numeric BEFORE creating xts
     for(col in req_xts_cols) {
-         if(!is.numeric(ohlc_df[[col]])) {
-             local_debug_log("Indicator Calc: Converting column '%s' to numeric.", col)
-             ohlc_df[[col]] <- suppressWarnings(as.numeric(as.character(ohlc_df[[col]])))
-         }
+      if(!is.numeric(ohlc_df[[col]])) {
+        local_debug_log("Indicator Calc: Converting column '%s' to numeric.", col)
+        ohlc_df[[col]] <- suppressWarnings(as.numeric(as.character(ohlc_df[[col]])))
+      }
     }
+    
+    # Remove columns that are entirely NA after conversion attempt (or were already all NA)
     ohlc_df <- ohlc_df[, colSums(is.na(ohlc_df)) < nrow(ohlc_df)]
-    req_xts_cols <- intersect(req_xts_cols, names(ohlc_df))
-    if(length(req_xts_cols) < 5) stop("Too many NA columns after numeric conversion.")
-
-
+    req_xts_cols <- intersect(req_xts_cols, names(ohlc_df)) # Update required cols based on what's left
+    if(length(req_xts_cols) < 5) stop("Too many NA columns after numeric conversion.") # Need at least O,H,L,C,V usually
+    
+    
     ohlc_xts <- xts(
-        x = ohlc_df[, req_xts_cols, drop=FALSE],
-        order.by = as.Date(ohlc_df$date)
+      x = ohlc_df[, req_xts_cols, drop=FALSE],
+      order.by = as.Date(ohlc_df$date)
     )
-    colnames(ohlc_xts) <- tools::toTitleCase(req_xts_cols) # Rename to Title Case for TTR/quantmod
+    # RENAME to Title Case for TTR/quantmod compatibility
+    colnames(ohlc_xts) <- tools::toTitleCase(req_xts_cols)
     local_debug_log("Indicator Calc: Renamed columns in temporary xts to Title Case: %s", paste(colnames(ohlc_xts), collapse=", "))
-
-
+    
+    
+    # Ensure we have a valid Price column (Adjusted preferred, fallback to Close)
     price_col <- if (has.Ad(ohlc_xts)) Ad(ohlc_xts) else Cl(ohlc_xts)
     if(is.null(price_col) || !inherits(price_col, "xts") || NCOL(price_col)!=1) stop("Could not extract price column (Adjusted/Close) from internal xts.")
-
+    
+    # Calculate indicators using Title Case columns
     ohlc_xts$sma_20 <- SMA(price_col, n = 20)
     ohlc_xts$sma_50 <- SMA(price_col, n = 50)
     ohlc_xts$sma_200 <- SMA(price_col, n = 200)
@@ -112,817 +206,1735 @@ tryCatch({
     ohlc_xts$macd_line <- macd_12_26_9[, "macd"]
     ohlc_xts$macd_signal <- macd_12_26_9[, "signal"]
     ohlc_xts$macd_hist <- macd_12_26_9[, "macd"] - macd_12_26_9[, "signal"]
-
+    
+    # BBands requires HLC
     bb_std <- BBands(HLC(ohlc_xts), n = 20, maType = "SMA", sd = 2)
     ohlc_xts$bb_dn <- bb_std[, "dn"]
     ohlc_xts$bb_mavg <- bb_std[, "mavg"]
     ohlc_xts$bb_up <- bb_std[, "up"]
     ohlc_xts$bb_pctB <- bb_std[, "pctB"]
-
+    
+    # ATR requires HLC
     atr_std <- ATR(HLC(ohlc_xts), n = 14)
     ohlc_xts$atr_14 <- atr_std[, "atr"]
-
+    
+    # Volume indicator needs Volume
     if (has.Vo(ohlc_xts)) {
-         ohlc_xts$vol_sma_20 <- SMA(Vo(ohlc_xts), n = 20)
+      ohlc_xts$vol_sma_20 <- SMA(Vo(ohlc_xts), n = 20)
     } else {
-        local_debug_log("Indicator Calc: Volume column not found in xts, skipping vol_sma_20.")
-        ohlc_xts$vol_sma_20 <- NA_real_
+      local_debug_log("Indicator Calc: Volume column not found in xts, skipping vol_sma_20.")
+      ohlc_xts$vol_sma_20 <- NA_real_ # Add column as NA
     }
-
-
+    
+    
+    # Convert back to data.frame and rename OHLCVA back to lower case
     result_df <- data.frame(date = index(ohlc_xts), coredata(ohlc_xts), check.names = FALSE)
     title_case_cols <- tools::toTitleCase(req_xts_cols)
     for(i in seq_along(title_case_cols)){
-         names(result_df) <- sub(paste0("^", title_case_cols[i],"$"), req_xts_cols[i], names(result_df))
+      names(result_df) <- sub(paste0("^", title_case_cols[i],"$"), req_xts_cols[i], names(result_df))
     }
-
+    
     local_debug_log("Indicator Calc: Finished. Output df rows: %d, Cols: %s", nrow(result_df), paste(colnames(result_df), collapse=", "))
     return(result_df)
-}, error = function(e) {
+  }, error = function(e) {
     local_debug_log("!!! Indicator Calc Error: %s", e$message)
     local_debug_log("Stack trace: %s", paste(capture.output(traceback()), collapse="\n"))
+    # Return minimal empty structure on error
     required_cols <- c("open", "high", "low", "close", "volume", "adjusted", "date")
     for(col in required_cols) { if(!col %in% names(ohlc_df)) ohlc_df[[col]] <- numeric(0) }
     if(!"date" %in% names(ohlc_df)) ohlc_df$date <- as.Date(character())
-    return(ohlc_df)
-})
-```
-
+    return(ohlc_df) # Return the input df (potentially modified)
+  })
 }
 
-# --- Apply Volume Filter Helper Function ---
-
-apply_volume_filter \<- function(signal_xts, data_xts, require_confirm, vol_sma_n, debug_log_func = NULL) { local_debug_log \<- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
-
-```         
-if (!require_confirm) {
+# --- Apply Volume Filter Helper Function (Enhanced) ---
+apply_volume_filter <- function(signal_xts, data_xts, require_confirm, vol_sma_n, debug_log_func = NULL) {
+  local_debug_log <- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
+  
+  if (!require_confirm) {
     local_debug_log("Volume filter not required.")
     return(signal_xts)
-}
-
-local_debug_log("Applying volume filter (SMA %d)...", vol_sma_n)
-vol_col_name <- "Volume" # Expect Title Case
-vol_sma_col_name <- paste0("vol_sma_", vol_sma_n) # Expect lowercase
-
-if (!has.Vo(data_xts)) {
-    warning("Volume column '", vol_col_name, "' (Title Case expected) not found. Cannot apply volume filter.")
+  }
+  
+  local_debug_log("Applying volume filter (SMA %d)...", vol_sma_n)
+  vol_col_name <- "Volume" # Expect Title Case in data_xts passed to signals
+  vol_sma_col_name <- paste0("vol_sma_", vol_sma_n) # Expect lowercase in data_xts passed to signals
+  
+  # --- Enhanced Checks ---
+  xts_cols <- colnames(data_xts)
+  local_debug_log("Columns available in data_xts for volume filter: %s", paste(xts_cols, collapse=", "))
+  local_debug_log("Checking for: '%s' (Title Case) and '%s' (lowercase)", vol_col_name, vol_sma_col_name)
+  
+  # Check 1: Base Volume column ('Volume')
+  has_volume_col <- vol_col_name %in% xts_cols
+  if (!has_volume_col) {
+    msg <- sprintf("Volume column '%s' (Title Case expected) not found in data_xts passed to apply_volume_filter. Skipping volume filter.", vol_col_name)
+    warning(msg); local_debug_log("!!! %s", msg)
+    return(signal_xts) # Skip filter
+  }
+  
+  # Check 2: Specific Volume SMA column ('vol_sma_N')
+  has_vol_sma_col <- vol_sma_col_name %in% xts_cols
+  if (!has_vol_sma_col) {
+    local_debug_log("Volume SMA column '%s' not found. Attempting calculation on the fly.", vol_sma_col_name)
+    # Try to calculate using the Title Case Volume column
+    volume_base_xts <- tryCatch(Vo(data_xts), error = function(e) {
+      local_debug_log("Error getting Vo(data_xts): %s", e$message); NULL
+    })
+    
+    # Check if we got volume and have enough data to calculate SMA
+    can_calculate_sma <- FALSE
+    if (!is.null(volume_base_xts) && inherits(volume_base_xts, "xts")) {
+      non_na_volume_count <- sum(!is.na(volume_base_xts[,1]))
+      if (non_na_volume_count >= vol_sma_n) {
+        can_calculate_sma <- TRUE
+      } else {
+        local_debug_log("Insufficient non-NA volume data (%d) to calculate SMA %d.", non_na_volume_count, vol_sma_n)
+      }
+    } else {
+      local_debug_log("Failed to extract Volume column (Vo) for on-the-fly SMA calculation.")
+    }
+    
+    if (can_calculate_sma) {
+      data_xts[[vol_sma_col_name]] <- tryCatch({
+        SMA(volume_base_xts, n = vol_sma_n)
+      }, error = function(e){
+        local_debug_log("!!! Error during on-the-fly SMA calculation for %s: %s", vol_sma_col_name, e$message)
+        NULL # Return NULL on error
+      })
+      # Check again if calculation was successful and column was added
+      if (!is.null(data_xts[[vol_sma_col_name]]) && vol_sma_col_name %in% colnames(data_xts)) {
+        local_debug_log("Successfully calculated '%s' on the fly.", vol_sma_col_name)
+        has_vol_sma_col <- TRUE # Update status
+        xts_cols <- colnames(data_xts) # Refresh colnames if new col added
+      } else {
+        # Remove potentially partially added invalid column if calculation failed
+        if (vol_sma_col_name %in% colnames(data_xts)) data_xts <- data_xts[, setdiff(colnames(data_xts), vol_sma_col_name)]
+        msg <- sprintf("Volume SMA '%s' on-the-fly calculation failed or returned invalid result. Skipping volume filter.", vol_sma_col_name)
+        warning(msg); local_debug_log("!!! %s", msg)
+        return(signal_xts) # Skip filter
+      }
+    } else {
+      # Cannot calculate SMA
+      msg <- sprintf("Cannot calculate Volume SMA '%s' on the fly (missing/insufficient Volume data). Skipping volume filter.", vol_sma_col_name)
+      warning(msg); local_debug_log("!!! %s", msg)
+      return(signal_xts) # Skip filter
+    }
+  }
+  
+  # --- Proceed only if both columns are confirmed present ---
+  if (!has_volume_col || !has_vol_sma_col) {
+    # This check is slightly redundant due to return statements above, but acts as a final safeguard
+    msg <- sprintf("Sanity check failed: Missing required columns ('%s', '%s') before filter logic. Skipping filter.", vol_col_name, vol_sma_col_name)
+    warning(msg); local_debug_log("!!! %s", msg)
     return(signal_xts)
+  }
+  
+  local_debug_log("Both '%s' and '%s' confirmed present. Proceeding with filter logic.", vol_col_name, vol_sma_col_name)
+  
+  # Extract relevant columns (Title Case Volume, lowercase SMA) - *Now safer*
+  # Use tryCatch just in case column names are tricky (though checks above should prevent this)
+  volume_data <- tryCatch({
+    data_xts[, c(vol_col_name, vol_sma_col_name), drop = FALSE]
+  }, error = function(e){
+    local_debug_log("!!! Unexpected error during column extraction for '%s', '%s': %s. Skipping filter.", vol_col_name, vol_sma_col_name, e$message)
+    return(NULL)
+  })
+  
+  if(is.null(volume_data)) return(signal_xts) # Skip if extraction failed
+  
+  # Merge signal with volume data
+  merged <- merge.xts(signal_xts, volume_data, join = "left")
+  
+  # Coredata extraction for faster comparison
+  volume_core <- coredata(merged[[vol_col_name]]); volume_sma_core <- coredata(merged[[vol_sma_col_name]])
+  signal_core <- coredata(merged[[1]]); signal_core[is.na(signal_core)] <- 0 # Treat NA signals as 0
+  
+  # Invalidate signals where volume is missing or below SMA
+  # Check for NAs in the comparison values themselves
+  invalidate_condition <- signal_core != 0 & (is.na(volume_core) | is.na(volume_sma_core) | volume_core <= volume_sma_core)
+  
+  # Ensure invalidate_condition has same length as signal_core if NAs caused issues
+  if(length(invalidate_condition) != length(signal_core)){
+    local_debug_log("!!! Length mismatch between signal_core and invalidate_condition. Skipping filter.")
+    warning("Volume filter condition calculation error. Skipping filter.")
+    return(signal_xts)
+  }
+  invalidate_condition[is.na(invalidate_condition)] <- TRUE # Treat NA condition as reason to invalidate (safer)
+  
+  filtered_signal_core <- signal_core
+  filtered_signal_core[invalidate_condition] <- 0 # Set invalidated signals to 0
+  
+  num_filtered <- sum(signal_core != 0, na.rm=TRUE) - sum(filtered_signal_core != 0, na.rm=TRUE)
+  local_debug_log("Volume filter invalidated %d signals.", num_filtered)
+  
+  # Create the filtered xts object
+  filtered_signal_xts <- xts(filtered_signal_core, order.by = index(merged))
+  colnames(filtered_signal_xts) <- colnames(signal_xts) # Restore original signal column name
+  return(filtered_signal_xts)
 }
-if (!vol_sma_col_name %in% names(data_xts)) {
-    local_debug_log("Calculating %s on the fly.", vol_sma_col_name)
-    data_xts[[vol_sma_col_name]] <- SMA(Vo(data_xts), n = vol_sma_n)
-     if (!vol_sma_col_name %in% names(data_xts)) {
-        warning("Volume SMA column '", vol_sma_col_name, "' could not be calculated/found. Cannot apply volume filter.")
-        return(signal_xts)
-     }
-}
-
-volume_data <- data_xts[, c(vol_col_name, vol_sma_col_name), drop = FALSE]
-merged <- merge.xts(signal_xts, volume_data, join = "left")
-
-volume_core <- coredata(merged[[vol_col_name]]); volume_sma_core <- coredata(merged[[vol_sma_col_name]])
-signal_core <- coredata(merged[[1]]); signal_core[is.na(signal_core)] <- 0
-
-invalidate_condition <- signal_core != 0 & (is.na(volume_core) | is.na(volume_sma_core) | volume_core <= volume_sma_core)
-filtered_signal_core <- signal_core
-filtered_signal_core[invalidate_condition] <- 0
-num_filtered <- sum(signal_core != 0) - sum(filtered_signal_core != 0)
-local_debug_log("Volume filter invalidated %d signals.", num_filtered)
-
-filtered_signal_xts <- xts(filtered_signal_core, order.by = index(merged))
-colnames(filtered_signal_xts) <- colnames(signal_xts)
-return(filtered_signal_xts)
-```
-
-}
-
 # --- Signal Generation Functions ---
+# NOTE: These functions now expect data_xts to have OHLCV in Title Case
+#       and indicator columns typically in lowercase (e.g., sma_20, rsi_14)
 
-generate_signal_ma_crossover \<- function(data_xts, params, debug_log_func = NULL) { local_debug_log \<- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...) short_n \<- params$short_ma; long_n <- params$long_ma; require_vol \<- params$require_volume_confirm; vol_sma_n <- params$volume_sma_n local_debug_log("--- generate_signal_ma_crossover: params=(%d/%d), VolConfirm=%s, VolSMA=%d ---", short_n, long_n, require_vol, vol_sma_n) short_ma_col \<- paste0("sma\_", short_n); long_ma_col \<- paste0("sma\_", long_n); req_cols \<- c(short_ma_col, long_ma_col) if (!all(req_cols %in% names(data_xts))) { local_debug_log("Warning: MA columns missing (%s), attempting calculation.", paste(setdiff(req_cols, names(data_xts)), collapse=", ")) price_c \<- if(has.Ad(data_xts)) Ad(data_xts) else Cl(data_xts) if(is.null(price_c)) stop("Cannot calculate missing MAs: Price column missing.") if(!short_ma_col %in% names(data_xts)) data_xts[[short_ma_col]] \<- SMA(price_c, n=short_n) if(!long_ma_col %in% names(data_xts)) data_xts[[long_ma_col]] \<- SMA(price_c, n=long_n) if (!all(req_cols %in% names(data_xts))) { stop(paste("Required MA columns still missing after attempt:", paste(setdiff(req_cols, names(data_xts)), collapse=", "))) } } short_ma_xts \<- data_xts[, short_ma_col, drop = FALSE]; long_ma_xts \<- data_xts[, long_ma_col, drop = FALSE] lagged_short_ma \<- lag.xts(short_ma_xts, k = 1); lagged_long_ma \<- lag.xts(long_ma_xts, k = 1) signal \<- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) \<- "signal" short_ma_core \<- coredata(short_ma_xts[,1]); long_ma_core \<- coredata(long_ma_xts[,1]); lagged_short_ma_core \<- coredata(lagged_short_ma[,1]); lagged_long_ma_core \<- coredata(lagged_long_ma[,1]) na_mask \<- is.na(short_ma_core)\|is.na(long_ma_core)\|is.na(lagged_short_ma_core)\|is.na(lagged_long_ma_core) buy_condition \<- !na_mask & short_ma_core \> long_ma_core & lagged_short_ma_core \<= lagged_long_ma_core sell_condition \<- !na_mask & short_ma_core \< long_ma_core & lagged_short_ma_core \>= lagged_long_ma_core local_debug_log("Raw MA Conditions: Buy TRUEs: %d, Sell TRUEs: %d", sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE)) buy_indices \<- which(buy_condition); sell_indices \<- which(sell_condition) signal[buy_indices, 1] \<- 1; signal[sell_indices, 1] \<- -1 signal_filtered \<- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log) local_debug_log("--- generate_signal_ma_crossover finished ---") return(signal_filtered) }
-
-generate_signal_rsi \<- function(data_xts, params, debug_log_func = NULL) { local_debug_log \<- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...) rsi_period \<- params$rsi_period; oversold <- params$rsi_oversold; overbought \<- params$rsi_overbought; require_vol <- params$require_volume_confirm; vol_sma_n \<- params\$volume_sma_n local_debug_log("--- generate_signal_rsi: period=%d, os=%d, ob=%d, VolConfirm=%s, VolSMA=%d ---", rsi_period, oversold, overbought, require_vol, vol_sma_n) rsi_col \<- paste0("rsi\_", rsi_period) if (!rsi_col %in% names(data_xts)) { if(rsi_period == 14 && "rsi_14" %in% names(data_xts)){ rsi_col \<- "rsi_14"; local_debug_log("Using existing 'rsi_14' column.") } else { local_debug_log("RSI period %d not found, calculating on the fly.", rsi_period); price_c \<- if(has.Ad(data_xts)) Ad(data_xts) else Cl(data_xts); if(is.null(price_c)) stop("Could not extract price column for RSI calculation."); data_xts[[rsi_col]] \<- RSI(price_c, n=rsi_period); if (!rsi_col %in% names(data_xts)) stop(paste("Failed to calculate RSI column:", rsi_col)) } } rsi_vec_xts \<- data_xts[, rsi_col, drop = FALSE]; lagged_rsi \<- lag.xts(rsi_vec_xts, k=1) signal \<- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) \<- "signal" rsi_vec_core \<- coredata(rsi_vec_xts[,1]); lagged_rsi_core \<- coredata(lagged_rsi[,1]) na_mask \<- is.na(rsi_vec_core)\|is.na(lagged_rsi_core) buy_condition \<- !na_mask & rsi_vec_core \> oversold & lagged_rsi_core \<= oversold sell_condition \<- !na_mask & rsi_vec_core \< overbought & lagged_rsi_core \>= overbought local_debug_log("Raw RSI Conditions: Buy TRUEs: %d, Sell TRUEs: %d", sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE)) buy_indices \<- which(buy_condition); sell_indices \<- which(sell_condition) signal[buy_indices, 1] \<- 1; signal[sell_indices, 1] \<- -1 signal_filtered \<- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log) local_debug_log("--- generate_signal_rsi finished ---") return(signal_filtered) }
-
-generate_signal_macd \<- function(data_xts, params, debug_log_func = NULL) { local_debug_log \<- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...) fast_n \<- params$macd_fast; slow_n <- params$macd_slow; signal_n \<- params$macd_signal; require_vol <- params$require_volume_confirm; vol_sma_n \<- params$volume_sma_n
-    local_debug_log("--- generate_signal_macd: params=(%d/%d/%d), VolConfirm=%s, VolSMA=%d ---", fast_n, slow_n, signal_n, require_vol, vol_sma_n)
-    req_cols <- c("macd_line", "macd_signal")
+generate_signal_ma_crossover <- function(data_xts, params, debug_log_func = NULL) {
+  local_debug_log <- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
+  short_n <- params$short_ma; long_n <- params$long_ma; require_vol <- params$require_volume_confirm; vol_sma_n <- params$volume_sma_n
+  local_debug_log("--- generate_signal_ma_crossover: params=(%d/%d), VolConfirm=%s, VolSMA=%d ---", short_n, long_n, require_vol, vol_sma_n)
+  
+  short_ma_col <- paste0("sma_", short_n); long_ma_col <- paste0("sma_", long_n);
+  req_cols <- c(short_ma_col, long_ma_col)
+  
+  # Check if required indicator columns exist (lowercase expected)
+  if (!all(req_cols %in% names(data_xts))) {
+    local_debug_log("Warning: MA columns missing (%s), attempting calculation.", paste(setdiff(req_cols, names(data_xts)), collapse=", "))
+    price_c <- if(has.Ad(data_xts)) Ad(data_xts) else Cl(data_xts) # Use Title Case Ad/Cl
+    if(is.null(price_c)) stop("Cannot calculate missing MAs: Price column missing.")
+    
+    if(!short_ma_col %in% names(data_xts)) data_xts[[short_ma_col]] <- SMA(price_c, n=short_n)
+    if(!long_ma_col %in% names(data_xts)) data_xts[[long_ma_col]] <- SMA(price_c, n=long_n)
+    # Recheck
     if (!all(req_cols %in% names(data_xts))) {
-         local_debug_log("Warning: MACD columns missing (%s), attempting calculation.", paste(setdiff(req_cols, names(data_xts)), collapse=", "))
-         price_c <- if(has.Ad(data_xts)) Ad(data_xts) else Cl(data_xts)
-         if(is.null(price_c)) stop("Cannot calculate missing MACD: Price column missing.")
-         macd_calc <- MACD(price_c, nFast = fast_n, nSlow = slow_n, nSig = signal_n)
-         data_xts$macd_line \<- macd_calc[, "macd"]; data_xts\$macd_signal \<- macd_calc[, "signal"] if (!all(req_cols %in% names(data_xts))) { stop(paste("Required MACD columns still missing after attempt:", paste(setdiff(req_cols, names(data_xts)), collapse=", "))) } } macd_line_xts \<- data_xts[, "macd_line", drop = FALSE]; signal_line_xts \<- data_xts[, "macd_signal", drop = FALSE] lagged_macd \<- lag.xts(macd_line_xts, k=1); lagged_signal \<- lag.xts(signal_line_xts, k=1) signal \<- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) \<- "signal" macd_line_core \<- coredata(macd_line_xts[,1]); signal_line_core \<- coredata(signal_line_xts[,1]); lagged_macd_core \<- coredata(lagged_macd[,1]); lagged_signal_core \<- coredata(lagged_signal[,1]) na_mask \<- is.na(macd_line_core)\|is.na(signal_line_core)\|is.na(lagged_macd_core)\|is.na(lagged_signal_core) buy_condition \<- !na_mask & macd_line_core \> signal_line_core & lagged_macd_core \<= lagged_signal_core sell_condition \<- !na_mask & macd_line_core \< signal_line_core & lagged_macd_core \>= lagged_signal_core local_debug_log("Raw MACD Conditions: Buy TRUEs: %d, Sell TRUEs: %d", sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE)) buy_indices \<- which(buy_condition); sell_indices \<- which(sell_condition) signal[buy_indices, 1] \<- 1; signal[sell_indices, 1] \<- -1 signal_filtered \<- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log) local_debug_log("--- generate_signal_macd finished ---") return(signal_filtered) }
+      stop(paste("Required MA columns still missing after attempt:", paste(setdiff(req_cols, names(data_xts)), collapse=", ")))
+    }
+  }
+  
+  short_ma_xts <- data_xts[, short_ma_col, drop = FALSE]; long_ma_xts <- data_xts[, long_ma_col, drop = FALSE]
+  lagged_short_ma <- lag.xts(short_ma_xts, k = 1); lagged_long_ma <- lag.xts(long_ma_xts, k = 1)
+  signal <- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) <- "signal"
+  
+  # Use coredata for faster vector operations
+  short_ma_core <- coredata(short_ma_xts[,1]); long_ma_core <- coredata(long_ma_xts[,1]);
+  lagged_short_ma_core <- coredata(lagged_short_ma[,1]); lagged_long_ma_core <- coredata(lagged_long_ma[,1])
+  
+  na_mask <- is.na(short_ma_core)|is.na(long_ma_core)|is.na(lagged_short_ma_core)|is.na(lagged_long_ma_core)
+  buy_condition <- !na_mask & short_ma_core > long_ma_core & lagged_short_ma_core <= lagged_long_ma_core
+  sell_condition <- !na_mask & short_ma_core < long_ma_core & lagged_short_ma_core >= lagged_long_ma_core
+  
+  local_debug_log("Raw MA Conditions: Buy TRUEs: %d, Sell TRUEs: %d", sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE))
+  buy_indices <- which(buy_condition); sell_indices <- which(sell_condition)
+  signal[buy_indices, 1] <- 1; signal[sell_indices, 1] <- -1
+  
+  # Apply volume filter (passes data_xts which has Title Case OHLCV)
+  signal_filtered <- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log)
+  
+  local_debug_log("--- generate_signal_ma_crossover finished ---")
+  return(signal_filtered)
+}
 
-generate_signal_bollinger \<- function(data_xts, params, debug_log_func = NULL) { local_debug_log \<- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...) bb_n \<- params$bb_n; bb_sd <- params$bb_sd; strategy_type \<- params$bb_strategy_type
-    require_vol <- params$require_volume_confirm; vol_sma_n \<- params\$volume_sma_n local_debug_log("--- generate_signal_bollinger: n=%d, sd=%.1f, type=%s, VolConfirm=%s, VolSMA=%d ---", bb_n, bb_sd, strategy_type, require_vol, vol_sma_n)
+generate_signal_rsi <- function(data_xts, params, debug_log_func = NULL) {
+  local_debug_log <- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
+  rsi_period <- params$rsi_period; oversold <- params$rsi_oversold; overbought <- params$rsi_overbought; require_vol <- params$require_volume_confirm; vol_sma_n <- params$volume_sma_n
+  local_debug_log("--- generate_signal_rsi: period=%d, os=%d, ob=%d, VolConfirm=%s, VolSMA=%d ---", rsi_period, oversold, overbought, require_vol, vol_sma_n)
+  
+  rsi_col <- paste0("rsi_", rsi_period)
+  # Check if exists (lowercase expected)
+  if (!rsi_col %in% names(data_xts)) {
+    # Special case for default RSI 14
+    if(rsi_period == 14 && "rsi_14" %in% names(data_xts)){
+      rsi_col <- "rsi_14"; local_debug_log("Using existing 'rsi_14' column.")
+    } else {
+      local_debug_log("RSI period %d not found, calculating on the fly.", rsi_period);
+      price_c <- if(has.Ad(data_xts)) Ad(data_xts) else Cl(data_xts); # Use Title Case
+      if(is.null(price_c)) stop("Could not extract price column for RSI calculation.");
+      data_xts[[rsi_col]] <- RSI(price_c, n=rsi_period);
+      if (!rsi_col %in% names(data_xts)) stop(paste("Failed to calculate RSI column:", rsi_col))
+    }
+  }
+  
+  rsi_vec_xts <- data_xts[, rsi_col, drop = FALSE]; lagged_rsi <- lag.xts(rsi_vec_xts, k=1)
+  signal <- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) <- "signal"
+  
+  rsi_vec_core <- coredata(rsi_vec_xts[,1]); lagged_rsi_core <- coredata(lagged_rsi[,1])
+  na_mask <- is.na(rsi_vec_core)|is.na(lagged_rsi_core)
+  buy_condition <- !na_mask & rsi_vec_core > oversold & lagged_rsi_core <= oversold
+  sell_condition <- !na_mask & rsi_vec_core < overbought & lagged_rsi_core >= overbought
+  
+  local_debug_log("Raw RSI Conditions: Buy TRUEs: %d, Sell TRUEs: %d", sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE))
+  buy_indices <- which(buy_condition); sell_indices <- which(sell_condition)
+  signal[buy_indices, 1] <- 1; signal[sell_indices, 1] <- -1
+  
+  signal_filtered <- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log)
+  
+  local_debug_log("--- generate_signal_rsi finished ---")
+  return(signal_filtered)
+}
 
-```         
-req_cols_hlc <- c("High", "Low", "Close")
-if (!all(req_cols_hlc %in% colnames(data_xts))) {
+generate_signal_macd <- function(data_xts, params, debug_log_func = NULL) {
+  local_debug_log <- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
+  fast_n <- params$macd_fast; slow_n <- params$macd_slow; signal_n <- params$macd_signal; require_vol <- params$require_volume_confirm; vol_sma_n <- params$volume_sma_n
+  local_debug_log("--- generate_signal_macd: params=(%d/%d/%d), VolConfirm=%s, VolSMA=%d ---", fast_n, slow_n, signal_n, require_vol, vol_sma_n)
+  
+  req_cols <- c("macd_line", "macd_signal") # Expect lowercase
+  # Check if exists
+  if (!all(req_cols %in% names(data_xts))) {
+    local_debug_log("Warning: MACD columns missing (%s), attempting calculation.", paste(setdiff(req_cols, names(data_xts)), collapse=", "))
+    price_c <- if(has.Ad(data_xts)) Ad(data_xts) else Cl(data_xts) # Use Title Case
+    if(is.null(price_c)) stop("Cannot calculate missing MACD: Price column missing.")
+    macd_calc <- MACD(price_c, nFast = fast_n, nSlow = slow_n, nSig = signal_n)
+    data_xts$macd_line <- macd_calc[, "macd"]; data_xts$macd_signal <- macd_calc[, "signal"]
+    # Recheck
+    if (!all(req_cols %in% names(data_xts))) {
+      stop(paste("Required MACD columns still missing after attempt:", paste(setdiff(req_cols, names(data_xts)), collapse=", ")))
+    }
+  }
+  
+  macd_line_xts <- data_xts[, "macd_line", drop = FALSE]; signal_line_xts <- data_xts[, "macd_signal", drop = FALSE]
+  lagged_macd <- lag.xts(macd_line_xts, k=1); lagged_signal <- lag.xts(signal_line_xts, k=1)
+  signal <- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) <- "signal"
+  
+  macd_line_core <- coredata(macd_line_xts[,1]); signal_line_core <- coredata(signal_line_xts[,1]);
+  lagged_macd_core <- coredata(lagged_macd[,1]); lagged_signal_core <- coredata(lagged_signal[,1])
+  na_mask <- is.na(macd_line_core)|is.na(signal_line_core)|is.na(lagged_macd_core)|is.na(lagged_signal_core)
+  buy_condition <- !na_mask & macd_line_core > signal_line_core & lagged_macd_core <= lagged_signal_core
+  sell_condition <- !na_mask & macd_line_core < signal_line_core & lagged_macd_core >= lagged_signal_core
+  
+  local_debug_log("Raw MACD Conditions: Buy TRUEs: %d, Sell TRUEs: %d", sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE))
+  buy_indices <- which(buy_condition); sell_indices <- which(sell_condition)
+  signal[buy_indices, 1] <- 1; signal[sell_indices, 1] <- -1
+  
+  signal_filtered <- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log)
+  
+  local_debug_log("--- generate_signal_macd finished ---")
+  return(signal_filtered)
+}
+
+generate_signal_bollinger <- function(data_xts, params, debug_log_func = NULL) {
+  local_debug_log <- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
+  bb_n <- params$bb_n; bb_sd <- params$bb_sd; strategy_type <- params$bb_strategy_type
+  require_vol <- params$require_volume_confirm; vol_sma_n <- params$volume_sma_n
+  local_debug_log("--- generate_signal_bollinger: n=%d, sd=%.1f, type=%s, VolConfirm=%s, VolSMA=%d ---",
+                  bb_n, bb_sd, strategy_type, require_vol, vol_sma_n)
+  
+  # --- Input Data Validation ---
+  # Expecting Title Case HLC columns from the backtester prep
+  req_cols_hlc <- c("High", "Low", "Close")
+  if (!all(req_cols_hlc %in% colnames(data_xts))) {
     missing_c <- paste(setdiff(req_cols_hlc, colnames(data_xts)), collapse=", ")
     stop(paste("BBands signal generation failed: Input xts missing required HLC columns (Title Case):", missing_c))
-}
-are_numeric <- sapply(data_xts[, req_cols_hlc], is.numeric)
-if (!all(are_numeric)) {
+  }
+  are_numeric <- sapply(data_xts[, req_cols_hlc], is.numeric)
+  if (!all(are_numeric)) {
     non_numeric_c <- paste(req_cols_hlc[!are_numeric], collapse=", ")
     stop(paste("BBands signal generation failed: Input HLC columns are not numeric:", non_numeric_c))
-}
-non_na_counts <- colSums(!is.na(coredata(data_xts[, req_cols_hlc])))
-if (any(non_na_counts < bb_n)) {
-     stop(sprintf("BBands signal generation failed: Insufficient non-NA data in HLC columns (need at least %d rows). Counts: H=%d, L=%d, C=%d",
-                  bb_n, non_na_counts["High"], non_na_counts["Low"], non_na_counts["Close"]))
-}
-
-ohlc_hlc <- HLC(data_xts); ohlc_close <- Cl(data_xts)
-if(is.null(ohlc_hlc) || NCOL(ohlc_hlc)!=3 || !all(req_cols_hlc %in% colnames(ohlc_hlc)) ) { stop("HLC data extraction failed unexpectedly after checks.") }
-if(is.null(ohlc_close) || NCOL(ohlc_close)!=1) { stop("Close data extraction failed unexpectedly.") }
-
-local_debug_log("Calculating BBands (n=%d, sd=%.1f) after checks passed.", bb_n, bb_sd)
-bbands <- tryCatch(
+  }
+  non_na_counts <- colSums(!is.na(coredata(data_xts[, req_cols_hlc])))
+  if (any(non_na_counts < bb_n)) {
+    stop(sprintf("BBands signal generation failed: Insufficient non-NA data in HLC columns (need at least %d rows). Counts: H=%d, L=%d, C=%d",
+                 bb_n, non_na_counts["High"], non_na_counts["Low"], non_na_counts["Close"]))
+  }
+  # --- End Validation ---
+  
+  ohlc_hlc <- HLC(data_xts); ohlc_close <- Cl(data_xts)
+  if(is.null(ohlc_hlc) || NCOL(ohlc_hlc)!=3 || !all(req_cols_hlc %in% colnames(ohlc_hlc)) ) { stop("HLC data extraction failed unexpectedly after checks.") }
+  if(is.null(ohlc_close) || NCOL(ohlc_close)!=1) { stop("Close data extraction failed unexpectedly.") }
+  
+  local_debug_log("Calculating BBands (n=%d, sd=%.1f) after checks passed.", bb_n, bb_sd)
+  bbands <- tryCatch(
     BBands(data_xts[, req_cols_hlc], n = bb_n, maType = "SMA", sd = bb_sd),
     error = function(e) {
-        local_debug_log("!!! Error calculating BBands inside tryCatch: %s", e$message)
-         if(grepl("Not enough observations", e$message, ignore.case = TRUE)) {
-             local_debug_log("BBands error likely due to NA's within the lookback period (n=%d).", bb_n)
-         }
-        return(NULL)
+      local_debug_log("!!! Error calculating BBands inside tryCatch: %s", e$message)
+      # Check if error is likely due to NAs within the lookback window
+      if(grepl("Not enough observations", e$message, ignore.case = TRUE)) {
+        local_debug_log("BBands error likely due to NA's within the lookback period (n=%d).", bb_n)
+      }
+      return(NULL) # Return NULL to indicate failure
     }
-)
-if (is.null(bbands)) { stop("Failed to calculate Bollinger Bands.") }
-
-upper_band <- bbands[, "up", drop = FALSE]; lower_band <- bbands[, "dn", drop = FALSE]; price_close <- ohlc_close
-lagged_close <- lag.xts(price_close, k = 1); lagged_upper <- lag.xts(upper_band, k = 1); lagged_lower <- lag.xts(lower_band, k = 1)
-signal <- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) <- "signal"
-close_core <- coredata(price_close[,1]); upper_core <- coredata(upper_band[,1]); lower_core <- coredata(lower_band[,1]); lag_close_core <- coredata(lagged_close[,1]); lag_upper_core <- coredata(lagged_upper[,1]); lag_lower_core <- coredata(lagged_lower[,1])
-na_mask <- is.na(close_core) | is.na(upper_core) | is.na(lower_core) | is.na(lag_close_core) | is.na(lag_upper_core) | is.na(lag_lower_core)
-
-if (strategy_type == "Breakout") {
+  )
+  if (is.null(bbands)) { stop("Failed to calculate Bollinger Bands.") } # Stop if BBands calculation failed
+  
+  upper_band <- bbands[, "up", drop = FALSE]; lower_band <- bbands[, "dn", drop = FALSE]; price_close <- ohlc_close
+  lagged_close <- lag.xts(price_close, k = 1); lagged_upper <- lag.xts(upper_band, k = 1); lagged_lower <- lag.xts(lower_band, k = 1)
+  signal <- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) <- "signal"
+  
+  # Use coredata for efficiency
+  close_core <- coredata(price_close[,1]); upper_core <- coredata(upper_band[,1]); lower_core <- coredata(lower_band[,1]);
+  lag_close_core <- coredata(lagged_close[,1]); lag_upper_core <- coredata(lagged_upper[,1]); lag_lower_core <- coredata(lagged_lower[,1])
+  
+  # Create NA mask based on all necessary values for comparison
+  na_mask <- is.na(close_core) | is.na(upper_core) | is.na(lower_core) |
+    is.na(lag_close_core) | is.na(lag_upper_core) | is.na(lag_lower_core)
+  
+  if (strategy_type == "Breakout") {
     buy_condition <- !na_mask & close_core > upper_core & lag_close_core <= lag_upper_core
     sell_condition <- !na_mask & close_core < lower_core & lag_close_core >= lag_lower_core
-} else if (strategy_type == "Reversion") {
+  } else if (strategy_type == "Reversion") {
     buy_condition <- !na_mask & close_core < lower_core & lag_close_core >= lag_lower_core
     sell_condition <- !na_mask & close_core > upper_core & lag_close_core <= lag_upper_core
-} else { stop("Unknown Bollinger Band strategy type specified.") }
-
-local_debug_log("Raw BB Conditions (%s): Buy TRUEs: %d, Sell TRUEs: %d (after NA mask)", strategy_type, sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE))
-buy_indices <- which(buy_condition); sell_indices <- which(sell_condition)
-signal[buy_indices, 1] <- 1; signal[sell_indices, 1] <- -1
-signal_filtered <- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log)
-local_debug_log("--- generate_signal_bollinger finished ---")
-return(signal_filtered)
-```
-
+  } else {
+    stop("Unknown Bollinger Band strategy type specified.")
+  }
+  
+  local_debug_log("Raw BB Conditions (%s): Buy TRUEs: %d, Sell TRUEs: %d (after NA mask)", strategy_type, sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE))
+  buy_indices <- which(buy_condition); sell_indices <- which(sell_condition)
+  signal[buy_indices, 1] <- 1; signal[sell_indices, 1] <- -1
+  
+  signal_filtered <- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log)
+  
+  local_debug_log("--- generate_signal_bollinger finished ---")
+  return(signal_filtered)
 }
 
-generate_signal_atr_breakout \<- function(data_xts, params, debug_log_func = NULL) { local_debug_log \<- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...) atr_n \<- params$atr_n; atr_multiplier <- params$atr_multiplier; require_vol \<- params$require_volume_confirm; vol_sma_n <- params$volume_sma_n local_debug_log("--- generate_signal_atr_breakout: n=%d, mult=%.1f, VolConfirm=%s, VolSMA=%d ---", atr_n, atr_multiplier, require_vol, vol_sma_n) req_cols_hlc \<- c("High","Low","Close") if (!all(req_cols_hlc %in% colnames(data_xts))) { stop("ATR Signal: Input xts missing HLC columns (Title Case).") } if (!all(sapply(data_xts[, req_cols_hlc], is.numeric))) { stop("ATR Signal: Input HLC columns non-numeric.") } ohlc_hlc \<- HLC(data_xts); ohlc_close \<- Cl(data_xts) if(is.null(ohlc_hlc) \|\| is.null(ohlc_close)) stop("ATR Signal: HLC/Close extraction failed.") local_debug_log("Recalculating ATR (n=%d)", atr_n) atr_calc \<- tryCatch(ATR(ohlc_hlc, n = atr_n), error = function(e) { local_debug_log("!!! Error calculating ATR: %s", e\$message); NULL }) if (is.null(atr_calc)) stop("Failed to calculate ATR.") atr_val \<- atr_calc[, "atr", drop = FALSE]; price_close \<- ohlc_close lagged_close \<- lag.xts(price_close, k = 1); lagged_atr \<- lag.xts(atr_val, k = 1) signal \<- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) \<- "signal" close_core \<- coredata(price_close[,1]); lag_close_core \<- coredata(lagged_close[,1]); lag_atr_core \<- coredata(lagged_atr[,1]) na_mask \<- is.na(close_core)\|is.na(lag_close_core)\|is.na(lag_atr_core)\|lag_atr_core\<=0 buy_condition \<- !na_mask & close_core \> (lag_close_core + atr_multiplier \* lag_atr_core) sell_condition \<- !na_mask & close_core \< (lag_close_core - atr_multiplier \* lag_atr_core) local_debug_log("Raw ATR Conditions: Buy TRUEs: %d, Sell TRUEs: %d", sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE)) buy_indices \<- which(buy_condition); sell_indices \<- which(sell_condition) signal[buy_indices, 1] \<- 1; signal[sell_indices, 1] \<- -1 signal_filtered \<- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log) local_debug_log("--- generate_signal_atr_breakout finished ---") return(signal_filtered) }
 
+generate_signal_atr_breakout <- function(data_xts, params, debug_log_func = NULL) {
+  local_debug_log <- function(msg, ...) if (!is.null(debug_log_func) && DEBUG_MODE) debug_log_func(msg, ...)
+  atr_n <- params$atr_n; atr_multiplier <- params$atr_multiplier; require_vol <- params$require_volume_confirm; vol_sma_n <- params$volume_sma_n
+  local_debug_log("--- generate_signal_atr_breakout: n=%d, mult=%.1f, VolConfirm=%s, VolSMA=%d ---", atr_n, atr_multiplier, require_vol, vol_sma_n)
+  
+  # Expecting Title Case HLC from backtester prep
+  req_cols_hlc <- c("High","Low","Close")
+  if (!all(req_cols_hlc %in% colnames(data_xts))) { stop("ATR Signal: Input xts missing HLC columns (Title Case).") }
+  if (!all(sapply(data_xts[, req_cols_hlc], is.numeric))) { stop("ATR Signal: Input HLC columns non-numeric.") }
+  
+  ohlc_hlc <- HLC(data_xts); ohlc_close <- Cl(data_xts)
+  if(is.null(ohlc_hlc) || is.null(ohlc_close)) stop("ATR Signal: HLC/Close extraction failed.")
+  
+  local_debug_log("Recalculating ATR (n=%d)", atr_n)
+  atr_calc <- tryCatch(ATR(ohlc_hlc, n = atr_n), error = function(e) {
+    local_debug_log("!!! Error calculating ATR: %s", e$message); NULL
+  })
+  if (is.null(atr_calc)) stop("Failed to calculate ATR.")
+  
+  atr_val <- atr_calc[, "atr", drop = FALSE]; price_close <- ohlc_close
+  lagged_close <- lag.xts(price_close, k = 1); lagged_atr <- lag.xts(atr_val, k = 1)
+  signal <- xts(rep(0, nrow(data_xts)), order.by = index(data_xts)); colnames(signal) <- "signal"
+  
+  close_core <- coredata(price_close[,1]); lag_close_core <- coredata(lagged_close[,1]); lag_atr_core <- coredata(lagged_atr[,1])
+  # Ensure ATR is positive for the calculation
+  na_mask <- is.na(close_core)|is.na(lag_close_core)|is.na(lag_atr_core)|lag_atr_core<=0
+  buy_condition <- !na_mask & close_core > (lag_close_core + atr_multiplier * lag_atr_core)
+  sell_condition <- !na_mask & close_core < (lag_close_core - atr_multiplier * lag_atr_core)
+  
+  local_debug_log("Raw ATR Conditions: Buy TRUEs: %d, Sell TRUEs: %d", sum(buy_condition, na.rm=TRUE), sum(sell_condition, na.rm=TRUE))
+  buy_indices <- which(buy_condition); sell_indices <- which(sell_condition)
+  signal[buy_indices, 1] <- 1; signal[sell_indices, 1] <- -1
+  
+  signal_filtered <- apply_volume_filter(signal, data_xts, require_vol, vol_sma_n, local_debug_log)
+  
+  local_debug_log("--- generate_signal_atr_breakout finished ---")
+  return(signal_filtered)
+}
 # --- Refactored Backtesting Engine ---
-
-run_backtest_strategy \<- function(data_with_indicators, strategy_name, params_list, commission_pct = 0.001, slippage_pct = 0.0005, debug_log_func = NULL, verbose_logging = TRUE) { local_debug_log \<- function(msg, ...) { if (!is.null(debug_log_func) && DEBUG_MODE && (verbose_logging \|\| is.null(match.call()\$verbose_logging))) { debug_log_func(msg, ...) } } local_debug_log("--- Starting Backtest: %s (Comm: %.4f, Slip: %.4f, Verbose: %s) ---", strategy_name, commission_pct, slippage_pct, verbose_logging) local_debug_log("Parameters received: %s", paste(names(params_list), params_list, sep="=", collapse=", "))
-
-```         
-required_ohlcva_cols_lower <- c("date", "open", "high", "low", "close", "volume", "adjusted")
-
-tryCatch({
-    # --- Initial Setup & Data Prep ---
-    if (!inherits(data_with_indicators, "data.frame")) stop("Input data_with_indicators is not a data.frame.")
-    if (!all(required_ohlcva_cols_lower %in% names(data_with_indicators))) stop(paste("Input data frame missing essential columns:", paste(setdiff(required_ohlcva_cols_lower, names(data_with_indicators)), collapse=", ")))
-    if (!inherits(data_with_indicators$date, "Date")) stop("'date' column must be Date class.")
-    data_with_indicators <- data_with_indicators[order(data_with_indicators$date), ]
-
-    indicator_cols_pattern <- "^sma_|^rsi_|^macd_|^bb_|^atr_|^vol_sma_"
-    base_ohlcva_cols <- setdiff(required_ohlcva_cols_lower, "date")
-    cols_to_convert <- unique(c(base_ohlcva_cols, grep(indicator_cols_pattern, names(data_with_indicators), value = TRUE)))
-    cols_to_convert <- intersect(cols_to_convert, names(data_with_indicators))
-
-    for (col in cols_to_convert) {
-         if (!is.numeric(data_with_indicators[[col]])) {
-             local_debug_log("Converting column '%s' to numeric in backtester prep.", col)
-             data_with_indicators[[col]] <- suppressWarnings(as.numeric(as.character(data_with_indicators[[col]])))
-         }
+run_backtest_strategy <- function(data_with_indicators, strategy_name, params_list,
+                                  commission_pct = 0.001, slippage_pct = 0.0005,
+                                  debug_log_func = NULL, verbose_logging = TRUE) {
+  
+  local_debug_log <- function(msg, ...) {
+    if (!is.null(debug_log_func) && DEBUG_MODE && (verbose_logging || is.null(match.call()$verbose_logging))) {
+      debug_log_func(msg, ...)
     }
-
+  }
+  local_debug_log("--- Starting Backtest: %s (Comm: %.4f, Slip: %.4f, Verbose: %s) ---",
+                  strategy_name, commission_pct, slippage_pct, verbose_logging)
+  local_debug_log("Parameters received: %s", paste(names(params_list), params_list, sep="=", collapse=", "))
+  
+  required_ohlcva_cols_lower <- c("date", "open", "high", "low", "close", "volume", "adjusted")
+  
+  tryCatch({
+    # --- Initial Setup & Data Prep ---
+    # Input data (data_with_indicators) is the data.frame for the backtest period
+    # It should have already been filtered and contain indicators (all lowercase)
+    if (!inherits(data_with_indicators, "data.frame")) stop("Input data_with_indicators is not a data.frame.")
+    if (!all(c("date", "open", "high", "low", "close") %in% names(data_with_indicators))) stop(paste("Input data frame missing essential OHLC columns (lowercase)."))
+    if (!inherits(data_with_indicators$date, "Date")) stop("'date' column must be Date class.")
+    if (nrow(data_with_indicators) < 2) stop("Need at least 2 rows of data for backtesting.")
+    
+    data_with_indicators <- data_with_indicators[order(data_with_indicators$date), ]
+    
+    # --- Ensure Required Volume SMA Exists IF Confirmation is On ---
+    # This check happens *before* creating the xts object
+    if (params_list$require_volume_confirm) {
+      req_vol_sma_n <- params_list$volume_sma_n
+      req_vol_sma_col <- paste0("vol_sma_", req_vol_sma_n)
+      
+      if (!req_vol_sma_col %in% names(data_with_indicators)) {
+        local_debug_log("Required %s column missing, calculating on the data.frame...", req_vol_sma_col)
+        if ("volume" %in% names(data_with_indicators) && is.numeric(data_with_indicators$volume)) {
+          if (sum(!is.na(data_with_indicators$volume)) >= req_vol_sma_n) {
+            data_with_indicators[[req_vol_sma_col]] <- TTR::SMA(data_with_indicators$volume, n = req_vol_sma_n)
+            local_debug_log("Calculated and added %s column to data.frame.", req_vol_sma_col)
+          } else {
+            msg <- sprintf("Insufficient non-NA volume data (%d points) to calculate %s (need %d). Disabling volume confirmation for this run.",
+                           sum(!is.na(data_with_indicators$volume)), req_vol_sma_col, req_vol_sma_n)
+            warning(msg); local_debug_log(msg)
+            params_list$require_volume_confirm <- FALSE # Modify local copy of params
+          }
+        } else {
+          msg <- "Cannot calculate required volume SMA: 'volume' column missing or non-numeric. Disabling volume confirmation."
+          warning(msg); local_debug_log(msg)
+          params_list$require_volume_confirm <- FALSE # Modify local copy of params
+        }
+      } else {
+        local_debug_log("Required %s column already exists in data.frame.", req_vol_sma_col)
+      }
+    }
+    # --- End Volume SMA Check ---
+    
+    
+    # Identify columns to convert: base OHLCVA + known indicator patterns
+    indicator_cols_pattern <- "^sma_|^rsi_|^macd_|^bb_|^atr_|^vol_sma_"
+    base_ohlcva_cols <- intersect(required_ohlcva_cols_lower, names(data_with_indicators)) # Use only cols present
+    base_ohlcva_cols <- setdiff(base_ohlcva_cols, "date") # o,h,l,c,v,a (if they exist)
+    
+    cols_to_convert <- unique(c(base_ohlcva_cols, grep(indicator_cols_pattern, names(data_with_indicators), value = TRUE)))
+    cols_to_convert <- intersect(cols_to_convert, names(data_with_indicators)) # Only those present
+    
+    # Convert identified columns to numeric if they aren't already
+    for (col in cols_to_convert) {
+      if (!is.numeric(data_with_indicators[[col]])) {
+        local_debug_log("Converting column '%s' to numeric in backtester prep.", col)
+        data_with_indicators[[col]] <- suppressWarnings(as.numeric(as.character(data_with_indicators[[col]])))
+      }
+    }
+    
+    # Double-check core OHLCV columns are numeric after conversion attempt
     check_numeric_cols <- intersect(base_ohlcva_cols, names(data_with_indicators))
-    are_core_numeric <- sapply(data_with_indicators[, check_numeric_cols, drop = FALSE], is.numeric)
-    if (!all(are_core_numeric)) {
+    if (length(check_numeric_cols) > 0) { # Only check if base cols exist
+      are_core_numeric <- sapply(data_with_indicators[, check_numeric_cols, drop = FALSE], is.numeric)
+      if (!all(are_core_numeric)) {
         non_numeric_core <- paste(check_numeric_cols[!are_core_numeric], collapse=", ")
         stop(paste("Core OHLCV columns failed numeric conversion:", non_numeric_core))
+      }
+      local_debug_log("Core OHLCV columns verified as numeric after conversion.")
     }
-    local_debug_log("Core OHLCV columns verified as numeric after conversion.")
-
-    # Create xts object, renaming OHLCVA to Title Case
+    
+    
+    # Create xts object needed for signal generation and TTR/quantmod functions
+    # Rename OHLCVA to Title Case for compatibility within this scope
     cols_for_xts <- setdiff(names(data_with_indicators), "date")
-    cols_for_xts <- intersect(cols_for_xts, names(data_with_indicators))
+    cols_for_xts <- intersect(cols_for_xts, names(data_with_indicators)) # ensure they exist
     data_xts <- xts(data_with_indicators[, cols_for_xts, drop = FALSE], order.by = as.Date(data_with_indicators$date))
+    
     current_colnames <- colnames(data_xts)
     rename_map <- c(open = "Open", high = "High", low = "Low", close = "Close", volume = "Volume", adjusted = "Adjusted")
     new_colnames <- current_colnames
     for (col_lower in names(rename_map)) {
-         if (col_lower %in% current_colnames) {
-             new_colnames[new_colnames == col_lower] <- rename_map[[col_lower]]
-         }
+      if (col_lower %in% current_colnames) {
+        new_colnames[new_colnames == col_lower] <- rename_map[[col_lower]]
+      }
     }
     colnames(data_xts) <- new_colnames
-    local_debug_log("Created xts with Title Case OHLCVA. Dims: %s. Cols: %s", paste(dim(data_xts), collapse="x"), paste(colnames(data_xts), collapse = ", "))
-
+    local_debug_log("Created xts with Title Case OHLCVA. Dims: %s. Cols: %s",
+                    paste(dim(data_xts), collapse="x"), paste(colnames(data_xts), collapse = ", "))
+    
     # --- Select Price Column ---
-    price_col <- if (has.Ad(data_xts)) Ad(data_xts) else Cl(data_xts)
+    # Now data_xts has Title Case OHLCV and lowercase indicators (incl. the needed vol_sma_N)
+    price_col <- if (has.Ad(data_xts)) Ad(data_xts) else Cl(data_xts) # Use Title Case Ad/Cl
+    # ... (rest of the function continues as before) ...
     if(is.null(price_col) || NCOL(price_col)!=1) stop("Could not extract price column (Adjusted/Close).")
     if(sum(!is.na(price_col[,1])) < 2) stop("Insufficient non-NA base price data.")
-    price_col_name <- colnames(price_col)[1]
+    price_col_name <- colnames(price_col)[1] # Should be "Adjusted" or "Close"
     local_debug_log("Base price selected ('%s').", price_col_name)
-
+    
     # --- Signal Generation ---
+    # Pass the prepared data_xts (with Title Case OHLCVA) to signal functions
     signal_raw <- switch(strategy_name,
-        "MA Crossover" = generate_signal_ma_crossover(data_xts, params = params_list, debug_log_func = local_debug_log),
-        "RSI Threshold" = generate_signal_rsi(data_xts, params = params_list, debug_log_func = local_debug_log),
-        "MACD Crossover" = generate_signal_macd(data_xts, params = params_list, debug_log_func = local_debug_log),
-        "Bollinger Band Breakout" = generate_signal_bollinger(data_xts, params = params_list, debug_log_func = local_debug_log),
-        "Bollinger Band Reversion" = generate_signal_bollinger(data_xts, params = params_list, debug_log_func = local_debug_log),
-        "ATR Breakout" = generate_signal_atr_breakout(data_xts, params = params_list, debug_log_func = local_debug_log),
-        stop("Unknown strategy selected: '", strategy_name, "'")
+                         "MA Crossover" = generate_signal_ma_crossover(data_xts, params = params_list, debug_log_func = local_debug_log),
+                         "RSI Threshold" = generate_signal_rsi(data_xts, params = params_list, debug_log_func = local_debug_log),
+                         "MACD Crossover" = generate_signal_macd(data_xts, params = params_list, debug_log_func = local_debug_log),
+                         "Bollinger Band Breakout" = generate_signal_bollinger(data_xts, params = params_list, debug_log_func = local_debug_log),
+                         "Bollinger Band Reversion" = generate_signal_bollinger(data_xts, params = params_list, debug_log_func = local_debug_log),
+                         "ATR Breakout" = generate_signal_atr_breakout(data_xts, params = params_list, debug_log_func = local_debug_log),
+                         stop("Unknown strategy selected: '", strategy_name, "'")
     )
     if(!inherits(signal_raw, "xts") || ncol(signal_raw) != 1) stop("Signal generation failed.")
     colnames(signal_raw) <- "signal_raw"
     local_debug_log("Raw signal generated for %s. Sum: %d", strategy_name, sum(signal_raw[,1], na.rm=TRUE))
-
+    
     # --- Lag Signal & Calculate Returns/Costs ---
     position_signal <- lag.xts(signal_raw, k = 1); position_signal[is.na(position_signal)] <- 0; colnames(position_signal) <- "position_signal"
     daily_returns_gross <- ROC(price_col[,1], n = 1, type = "discrete"); daily_returns_gross[is.na(daily_returns_gross)] <- 0; colnames(daily_returns_gross) <- "daily_returns_gross"
-    trades_occur <- diff(position_signal) != 0; trades_occur[1] <- position_signal[1] != 0; trades_occur[is.na(trades_occur)] <- FALSE
-    trade_cost_factor <- (commission_pct + slippage_pct); costs_per_day <- xts(rep(0, NROW(position_signal)), order.by=index(position_signal)); costs_per_day[trades_occur] <- trade_cost_factor; colnames(costs_per_day) <- "trade_costs"
-
+    
+    trades_occur <- diff(position_signal) != 0; trades_occur[1] <- position_signal[1] != 0; # Trade on first day if signal is non-zero
+    trades_occur[is.na(trades_occur)] <- FALSE
+    trade_cost_factor <- (commission_pct + slippage_pct);
+    costs_per_day <- xts(rep(0, NROW(position_signal)), order.by=index(position_signal));
+    costs_per_day[trades_occur] <- trade_cost_factor; colnames(costs_per_day) <- "trade_costs"
+    
     # --- Align & Calculate Net Returns ---
-    common_index <- index(price_col)
-    objects_to_align <- list(position_signal = position_signal, daily_returns_gross = daily_returns_gross, trade_costs = costs_per_day)
+    common_index <- index(price_col) # Use the index of the price column as the master index
+    objects_to_align <- list(position_signal = position_signal,
+                             daily_returns_gross = daily_returns_gross,
+                             trade_costs = costs_per_day)
+    # Align all components to the common index, filling missing with 0
     aligned_list <- lapply(objects_to_align, function(x) { y <- x[common_index]; y[is.na(y)] <- 0; return(y) })
     if (length(unique(sapply(aligned_list, NROW))) != 1) stop("Alignment failed: length mismatch.")
-    strategy_returns_net <- (aligned_list$daily_returns_gross * aligned_list$position_signal) - aligned_list$trade_costs; colnames(strategy_returns_net) <- "strategy_returns_net"
+    
+    strategy_returns_net <- (aligned_list$daily_returns_gross * aligned_list$position_signal) - aligned_list$trade_costs;
+    colnames(strategy_returns_net) <- "strategy_returns_net"
     local_debug_log("Net strategy returns calculated.")
-
+    
     # --- Combine Results ---
+    # Keep relevant indicators (lowercase names) + Base OHLCV (Title Case) + Price (Title Case)
     cols_to_keep_indicators <- grep("^sma_|^rsi_|^macd_|^bb_|^atr_|^vol_sma_", names(data_xts), value = TRUE)
-    cols_to_keep_base <- c("Open", "High", "Low", "Close", "Volume")
+    cols_to_keep_base <- c("Open", "High", "Low", "Close", "Volume") # Keep Title Case
     cols_to_keep_combined <- unique(c(cols_to_keep_base, price_col_name, cols_to_keep_indicators))
-    cols_to_keep_combined <- intersect(cols_to_keep_combined, colnames(data_xts))
+    cols_to_keep_combined <- intersect(cols_to_keep_combined, colnames(data_xts)) # Only keep those that exist
     data_xts_subset <- data_xts[, cols_to_keep_combined, drop=FALSE]
-
+    
+    # Merge everything using the common index, inner join to ensure consistency
     results_xts <- merge.xts(
-        data_xts_subset[common_index],
-        aligned_list$position_signal,
-        aligned_list$daily_returns_gross,
-        aligned_list$trade_costs,
-        strategy_returns_net,
-        signal_raw[common_index],
-        join = 'inner', fill = 0
+      data_xts_subset[common_index],
+      aligned_list$position_signal,
+      aligned_list$daily_returns_gross,
+      aligned_list$trade_costs,
+      strategy_returns_net,
+      signal_raw[common_index], # Also include the raw (unlagged) signal
+      join = 'inner', fill = 0 # Use inner join and fill NAs with 0
     )
+    
+    # Rename the base price column for clarity in results
     idx_to_rename <- match(price_col_name, colnames(results_xts))
     if (!is.na(idx_to_rename)) { colnames(results_xts)[idx_to_rename] <- "base_price_val" }
+    
     local_debug_log("Final results xts created. Dims: %s", paste(dim(results_xts), collapse="x"))
-
+    
     # --- Calculate Performance Metrics & Trade Log ---
     local_debug_log("Calculating performance metrics & trade log...")
     net_returns_xts <- results_xts$strategy_returns_net; net_returns_xts[is.na(net_returns_xts)] <- 0
     metrics <- list(total_return=0, annual_return=0, max_drawdown=0, sharpe_ratio=NA_real_, sortino_ratio=NA_real_, calmar_ratio=NA_real_, win_rate=NA_real_, avg_win=0, avg_loss=0, num_trades=0)
     trade_log_list <- list()
-
+    
     if (NROW(net_returns_xts) > 0 && !all(coredata(net_returns_xts) == 0)) {
-         total_return <- PerformanceAnalytics::Return.cumulative(net_returns_xts); total_return <- as.numeric(last(total_return))
-         annual_return <- PerformanceAnalytics::Return.annualized(net_returns_xts, scale = 252); annual_return <- as.numeric(annual_return[1, 1])
-         max_dd <- PerformanceAnalytics::maxDrawdown(net_returns_xts); max_dd <- abs(as.numeric(max_dd))
-         sharpe_ratio <- tryCatch(as.numeric(PerformanceAnalytics::SharpeRatio.annualized(net_returns_xts, scale = 252, geometric = FALSE)[1,1]), error=function(e) NA_real_)
-         sortino_ratio <- tryCatch(as.numeric(PerformanceAnalytics::SortinoRatio(net_returns_xts)[1, 1]), error=function(e) NA_real_)
-         calmar_ratio <- tryCatch(as.numeric(PerformanceAnalytics::CalmarRatio(net_returns_xts, scale = 252)[1, 1]), error=function(e) NA_real_)
-
-         pos_signal_vec <- coredata(results_xts$position_signal)
-         price_vec <- coredata(results_xts$base_price_val)
-         # Ensure Open column exists before trying to access it
-         if (!"Open" %in% colnames(results_xts)) stop("Missing 'Open' column needed for trade log execution price.")
-         open_price_vec <- coredata(results_xts$Open)
-         dates_vec <- index(results_xts)
-         entry_price <- NA; entry_date <- NA; entry_signal_type <- NA
-
-         for (i in 2:length(pos_signal_vec)) {
-             signal_today = pos_signal_vec[i]; signal_yesterday = pos_signal_vec[i-1]
-             current_date = dates_vec[i]; exec_price = open_price_vec[i]
-             if (is.na(exec_price)) next
-             if (signal_yesterday != 0 && signal_today != signal_yesterday) {
-                 if (!is.na(entry_price)) {
-                     exit_price = exec_price; exit_date = current_date
-                     gross_return = if(entry_signal_type == 1) { (exit_price / entry_price) - 1 } else { (entry_price / exit_price) - 1 }
-                     net_return = gross_return - (trade_cost_factor * 2)
-                     trade_log_list[[length(trade_log_list) + 1]] <- list(entry_date = format(entry_date), exit_date = format(exit_date), position_type = ifelse(entry_signal_type == 1, "Long", "Short"), entry_price = entry_price, exit_price = exit_price, pnl_gross_pct = gross_return, pnl_net_pct = net_return)
-                     entry_price <- NA; entry_date <- NA; entry_signal_type <- NA
-                 }
-             }
-             if (signal_today != 0 && signal_today != signal_yesterday) {
-                 entry_price = exec_price; entry_date = current_date; entry_signal_type = signal_today
-             }
-         }
-         num_trades_calc <- length(trade_log_list)
-         if (num_trades_calc > 0) {
-              trade_returns_net <- sapply(trade_log_list, function(t) t$pnl_net_pct); trade_returns_net[is.na(trade_returns_net)] <- 0
-              wins <- trade_returns_net[trade_returns_net > 0]; losses <- trade_returns_net[trade_returns_net <= 0]
-              win_rate <- if(num_trades_calc > 0) length(wins) / num_trades_calc else NA_real_
-              avg_win <- if(length(wins) > 0) mean(wins) else 0
-              avg_loss <- if(length(losses) > 0) mean(losses) else 0
-         } else { win_rate <- NA_real_; avg_win <- 0; avg_loss <- 0 }
-         metrics <- list(total_return = total_return, annual_return = annual_return, max_drawdown = max_dd, sharpe_ratio = sharpe_ratio, sortino_ratio = sortino_ratio, calmar_ratio = calmar_ratio, win_rate = win_rate, avg_win = avg_win, avg_loss = avg_loss, num_trades = num_trades_calc)
-    } else { local_debug_log("Strategy produced zero net returns or insufficient data.") }
-
+      # Calculate performance metrics
+      total_return <- PerformanceAnalytics::Return.cumulative(net_returns_xts); total_return <- as.numeric(last(total_return))
+      annual_return <- PerformanceAnalytics::Return.annualized(net_returns_xts, scale = 252); annual_return <- as.numeric(annual_return[1, 1])
+      max_dd <- PerformanceAnalytics::maxDrawdown(net_returns_xts); max_dd <- abs(as.numeric(max_dd))
+      sharpe_ratio <- tryCatch(as.numeric(PerformanceAnalytics::SharpeRatio.annualized(net_returns_xts, scale = 252, geometric = FALSE)[1,1]), error=function(e) NA_real_)
+      sortino_ratio <- tryCatch(as.numeric(PerformanceAnalytics::SortinoRatio(net_returns_xts)[1, 1]), error=function(e) NA_real_)
+      calmar_ratio <- tryCatch(as.numeric(PerformanceAnalytics::CalmarRatio(net_returns_xts, scale = 252)[1, 1]), error=function(e) NA_real_)
+      
+      # Generate Trade Log (using Open price for execution assumption)
+      pos_signal_vec <- coredata(results_xts$position_signal)
+      price_vec <- coredata(results_xts$base_price_val) # Base price (Adj/Close)
+      # Ensure Open column exists before trying to access it (expecting Title Case)
+      if (!"Open" %in% colnames(results_xts)) stop("Missing 'Open' column needed for trade log execution price.")
+      open_price_vec <- coredata(results_xts$Open)
+      dates_vec <- index(results_xts)
+      
+      entry_price <- NA; entry_date <- NA; entry_signal_type <- NA
+      
+      for (i in 2:length(pos_signal_vec)) {
+        signal_today = pos_signal_vec[i]; signal_yesterday = pos_signal_vec[i-1]
+        current_date = dates_vec[i]; exec_price = open_price_vec[i] # Execute at today's open
+        
+        # Skip if execution price is NA
+        if (is.na(exec_price)) next
+        
+        # --- Check for Exit ---
+        # If we were in a position yesterday AND (signal flips OR signal goes to 0)
+        if (signal_yesterday != 0 && signal_today != signal_yesterday) {
+          if (!is.na(entry_price)) { # Ensure we had an entry to close
+            exit_price = exec_price; exit_date = current_date
+            gross_return = if(entry_signal_type == 1) { (exit_price / entry_price) - 1 } # Long exit
+            else { (entry_price / exit_price) - 1 } # Short exit (cover)
+            # Cost applied on entry and exit
+            net_return = gross_return - (trade_cost_factor * 2)
+            
+            trade_log_list[[length(trade_log_list) + 1]] <- list(
+              entry_date = format(entry_date), exit_date = format(exit_date),
+              position_type = ifelse(entry_signal_type == 1, "Long", "Short"),
+              entry_price = entry_price, exit_price = exit_price,
+              pnl_gross_pct = gross_return, pnl_net_pct = net_return
+            )
+            # Reset entry state
+            entry_price <- NA; entry_date <- NA; entry_signal_type <- NA
+          }
+        }
+        
+        # --- Check for Entry ---
+        # If signal is non-zero today AND it's different from yesterday's signal
+        if (signal_today != 0 && signal_today != signal_yesterday) {
+          entry_price = exec_price; entry_date = current_date; entry_signal_type = signal_today
+        }
+      } # End loop through signals
+      
+      # Calculate trade-based metrics
+      num_trades_calc <- length(trade_log_list)
+      if (num_trades_calc > 0) {
+        trade_returns_net <- sapply(trade_log_list, function(t) t$pnl_net_pct); trade_returns_net[is.na(trade_returns_net)] <- 0
+        wins <- trade_returns_net[trade_returns_net > 0]; losses <- trade_returns_net[trade_returns_net <= 0]
+        win_rate <- if(num_trades_calc > 0) length(wins) / num_trades_calc else NA_real_
+        avg_win <- if(length(wins) > 0) mean(wins) else 0
+        avg_loss <- if(length(losses) > 0) mean(losses) else 0
+      } else {
+        win_rate <- NA_real_; avg_win <- 0; avg_loss <- 0
+      }
+      
+      metrics <- list(total_return = total_return, annual_return = annual_return, max_drawdown = max_dd,
+                      sharpe_ratio = sharpe_ratio, sortino_ratio = sortino_ratio, calmar_ratio = calmar_ratio,
+                      win_rate = win_rate, avg_win = avg_win, avg_loss = avg_loss, num_trades = num_trades_calc)
+    } else {
+      local_debug_log("Strategy produced zero net returns or insufficient data.")
+    }
+    
+    # Replace Inf/-Inf with NA in metrics
     metrics <- lapply(metrics, function(x) if(is.numeric(x) && !is.finite(x)) NA_real_ else x)
-    local_debug_log("Metrics calculated: SR=%.2f, NumTrades=%d", if(is.na(metrics$sharpe_ratio)) NA else metrics$sharpe_ratio, metrics$num_trades)
+    local_debug_log("Metrics calculated: SR=%.2f, NumTrades=%d",
+                    if(is.na(metrics$sharpe_ratio)) NA else metrics$sharpe_ratio, metrics$num_trades)
+    
     trade_log_df <- if(length(trade_log_list) > 0) dplyr::bind_rows(trade_log_list) else data.frame(entry_date=character(), exit_date=character(), position_type=character(), entry_price=numeric(), exit_price=numeric(), pnl_gross_pct=numeric(), pnl_net_pct=numeric(), stringsAsFactors = FALSE)
     local_debug_log("Created trade log data frame with %d rows.", nrow(trade_log_df))
-
+    
     # --- Prepare Output ---
+    # Convert results xts back to dataframe for output
     results_df <- data.frame(date = index(results_xts), coredata(results_xts), check.names = FALSE)
+    
+    # Identify MA/BB columns used for plotting (use lowercase names as they appear in params_list)
     ma_cols_used <- NULL; bb_cols_used <- NULL
-    if(strategy_name == "MA Crossover") { ma_cols_used <- list(short = paste0("sma_", params_list$short_ma), long = paste0("sma_", params_list$long_ma)) }
-    if(strategy_name %in% c("Bollinger Band Breakout", "Bollinger Band Reversion")) {
-         bb_plot_bands <- tryCatch(BBands(HLC(results_xts), n = params_list$bb_n, maType = "SMA", sd = params_list$bb_sd), error = function(e) {local_debug_log("Error recalc BBands for plot: %s", e$message); NULL})
-        if (!is.null(bb_plot_bands)) {
-            results_df$bb_plot_dn <- coredata(bb_plot_bands[index(results_xts), "dn"])
-            results_df$bb_plot_mavg <- coredata(bb_plot_bands[index(results_xts), "mavg"])
-            results_df$bb_plot_up <- coredata(bb_plot_bands[index(results_xts), "up"])
-            bb_cols_used <- list(dn = "bb_plot_dn", mavg = "bb_plot_mavg", up = "bb_plot_up", n = params_list$bb_n, sd = params_list$bb_sd)
-        }
+    if(strategy_name == "MA Crossover") {
+      ma_cols_used <- list(short = paste0("sma_", params_list$short_ma), long = paste0("sma_", params_list$long_ma))
     }
-
-    output <- list(results = results_df, metrics = metrics, trade_log = trade_log_df,
-                    strategy = strategy_name, params = params_list,
-                    ma_cols = ma_cols_used, bb_cols = bb_cols_used)
+    if(strategy_name %in% c("Bollinger Band Breakout", "Bollinger Band Reversion")) {
+      # Recalculate BBands on the results_xts just for plotting consistency if needed
+      bb_plot_bands <- tryCatch(
+        BBands(HLC(results_xts), n = params_list$bb_n, maType = "SMA", sd = params_list$bb_sd),
+        error = function(e) {local_debug_log("Error recalc BBands for plot: %s", e$message); NULL}
+      )
+      if (!is.null(bb_plot_bands)) {
+        # Add these potentially recalculated bands to the results_df for plotting
+        results_df$bb_plot_dn <- coredata(bb_plot_bands[index(results_xts), "dn"])
+        results_df$bb_plot_mavg <- coredata(bb_plot_bands[index(results_xts), "mavg"])
+        results_df$bb_plot_up <- coredata(bb_plot_bands[index(results_xts), "up"])
+        bb_cols_used <- list(dn = "bb_plot_dn", mavg = "bb_plot_mavg", up = "bb_plot_up", # Names of cols *added* to results_df
+                             n = params_list$bb_n, sd = params_list$bb_sd) # Original params
+      }
+    }
+    
+    output <- list(
+      results = results_df,     # Dataframe with OHLC (Title Case), indicators (mostly lower), signals, returns
+      metrics = metrics,        # List of performance numbers
+      trade_log = trade_log_df, # Dataframe of trades
+      strategy = strategy_name, # String name
+      params = params_list,     # List of parameters used
+      ma_cols = ma_cols_used,   # List with names of MA columns (lower case) if MA strategy
+      bb_cols = bb_cols_used    # List with names of BB columns (lower case) if BB strategy
+    )
     local_debug_log("--- Backtest Complete (Success) ---")
     return(output)
-
-}, error = function(e) {
+    
+  }, error = function(e) {
     message(sprintf("!!! Error INSIDE run_backtest_strategy (%s): %s", strategy_name, e$message))
+    # Uncomment below to print stack trace to console on error
     # stack_trace <- paste(capture.output(traceback()), collapse="\n")
     # message(stack_trace)
-    return(list(error = paste("Error during backtest:", e$message)))
-})
-```
-
+    return(list(error = paste("Error during backtest:", e$message))) # Return error structure
+  })
 }
+
+
 
 # --- Plotting Function (MAIN CHART ONLY) ---
-
-create_backtest_chart \<- function(backtest_output) { df \<- backtest_output$results
-    strategy <- backtest_output$strategy; params \<- backtest_output$params
-    ma_cols <- backtest_output$ma_cols; bb_cols \<- backtest_output\$bb_cols
-
-```         
-required_plot_cols <- c("date", "Open", "High", "Low", "Close") # Expect Title Case OHLC
-if (!all(required_plot_cols %in% names(df))) { stop("Plotting error: Missing required OHLC columns.") }
-
-p <- plot_ly(df, x = ~date, type = "candlestick", open = ~Open, high = ~High, low = ~Low, close = ~Close, name = "Price", increasing = list(line = list(color = 'green')), decreasing = list(line = list(color = 'red')))
-
-# Plot MAs if applicable (lowercase names from ma_cols)
-if (!is.null(ma_cols) && all(c(ma_cols$short, ma_cols$long) %in% names(df))) {
-    p <- p %>% add_lines(x = ~date, y = ~get(ma_cols$short), name = paste("SMA", params$short_ma), line = list(color = 'blue', width = 1)) %>% add_lines(x = ~date, y = ~get(ma_cols$long), name = paste("SMA", params$long_ma), line = list(color = 'orange', width = 1))
+create_backtest_chart <- function(backtest_output) {
+  df <- backtest_output$results # Expects dataframe from run_backtest_strategy
+  strategy <- backtest_output$strategy; params <- backtest_output$params
+  ma_cols <- backtest_output$ma_cols; bb_cols <- backtest_output$bb_cols
+  
+  # Expects Title Case OHLC columns in the input df
+  required_plot_cols <- c("date", "Open", "High", "Low", "Close")
+  if (!all(required_plot_cols %in% names(df))) { stop("Plotting error: Missing required OHLC columns (Title Case).") }
+  
+  p <- plot_ly(df, x = ~date, type = "candlestick",
+               open = ~Open, high = ~High, low = ~Low, close = ~Close, name = "Price",
+               increasing = list(line = list(color = 'green')),
+               decreasing = list(line = list(color = 'red')))
+  
+  # Plot MAs if applicable (use lowercase names stored in ma_cols)
+  if (!is.null(ma_cols) && all(c(ma_cols$short, ma_cols$long) %in% names(df))) {
+    p <- p %>% add_lines(x = ~date, y = ~get(ma_cols$short), name = paste("SMA", params$short_ma), line = list(color = 'blue', width = 1)) %>%
+      add_lines(x = ~date, y = ~get(ma_cols$long), name = paste("SMA", params$long_ma), line = list(color = 'orange', width = 1))
+  }
+  # Plot Bollinger Bands if applicable (use lowercase names stored in bb_cols which point to df cols like 'bb_plot_up')
+  if (!is.null(bb_cols) && all(c(bb_cols$dn, bb_cols$mavg, bb_cols$up) %in% names(df))) {
+    p <- p %>% add_lines(x = ~date, y = ~get(bb_cols$up), name = paste0("BB Up (", bb_cols$n, ",", bb_cols$sd, ")"), line = list(color = 'rgba(65,105,225,0.5)', width = 1, dash = 'dash')) %>%
+      add_lines(x = ~date, y = ~get(bb_cols$dn), name = paste0("BB Dn (", bb_cols$n, ",", bb_cols$sd, ")"), line = list(color = 'rgba(65,105,225,0.5)', width = 1, dash = 'dash')) %>%
+      add_lines(x = ~date, y = ~get(bb_cols$mavg), name = paste0("BB MA (", bb_cols$n, ")"), line = list(color = 'rgba(160,32,240,0.6)', width = 1, dash = 'dot'))
+  }
+  
+  # Plot Buy/Sell Markers (using position_signal)
+  if ("position_signal" %in% names(df)) {
+    # Calculate previous signal to detect changes
+    df_signals <- df %>%
+      arrange(date) %>%
+      mutate(prev_signal = lag(position_signal, default = 0)) %>%
+      # Filter for rows where the signal actually changes
+      filter(position_signal != prev_signal) %>%
+      # Determine action and marker position (use Title Case OHLC for y-position)
+      mutate(
+        action = case_when(
+          position_signal == 1  ~ "Buy",   # Entered Long
+          position_signal == -1 ~ "Sell",  # Entered Short
+          position_signal == 0  ~ "Exit",  # Exited Long or Short
+          TRUE ~ "Unknown"
+        ),
+        marker_y = case_when(
+          action == "Buy"  ~ Low * 0.99,  # Place below low
+          action == "Sell" ~ High * 1.01, # Place above high
+          action == "Exit" ~ Close,       # Place near close
+          TRUE ~ Close
+        )
+      )
+    
+    buy_entries <- df_signals %>% filter(action == "Buy")
+    sell_entries <- df_signals %>% filter(action == "Sell") # Represents short entries
+    exit_signals <- df_signals %>% filter(action == "Exit") # Represents exits from long/short
+    
+    if(nrow(buy_entries) > 0) {
+      p <- p %>% add_markers(data = buy_entries, x = ~date, y = ~marker_y, inherit = FALSE,
+                             name = "Buy Entry", marker = list(color = 'green', size = 8, symbol = 'triangle-up'))
+    }
+    if(nrow(sell_entries) > 0) {
+      p <- p %>% add_markers(data = sell_entries, x = ~date, y = ~marker_y, inherit = FALSE,
+                             name = "Sell/Short Entry", marker = list(color = 'red', size = 8, symbol = 'triangle-down'))
+    }
+    if(nrow(exit_signals) > 0) {
+      p <- p %>% add_markers(data = exit_signals, x = ~date, y = ~marker_y, inherit = FALSE,
+                             name = "Exit Signal", marker = list(color = 'black', size = 6, symbol = 'x'))
+    }
+  }
+  
+  # Create dynamic title based on strategy and params
+  strategy_title <- switch(strategy,
+                           "MA Crossover" = paste("MA Crossover (", params$short_ma, "/", params$long_ma, ")"),
+                           "RSI Threshold" = paste("RSI (", params$rsi_period, ") Thr (", params$rsi_oversold, "/", params$rsi_overbought, ")"),
+                           "MACD Crossover" = "MACD Crossover (12/26/9)", # Assuming fixed params for MACD here
+                           "Bollinger Band Breakout" = paste("BB Breakout (", params$bb_n, "/", params$bb_sd, ")"),
+                           "Bollinger Band Reversion" = paste("BB Reversion (", params$bb_n, "/", params$bb_sd, ")"),
+                           "ATR Breakout" = paste("ATR Breakout (", params$atr_n, "/", params$atr_multiplier, "x)"),
+                           "Unknown Strategy" # Fallback
+  )
+  if (!is.null(params$require_volume_confirm) && params$require_volume_confirm) {
+    strategy_title <- paste(strategy_title, "+ Vol Confirm (SMA", params$volume_sma_n, ")")
+  }
+  
+  p <- p %>% layout(
+    title = list(text = paste("Backtest:", strategy_title), x = 0.05),
+    xaxis = list(title = "Date", rangeslider = list(visible = FALSE), showticklabels=TRUE),
+    yaxis = list(title = "Price"),
+    legend = list(orientation = "h", y = -0.2, xanchor = "center", x = 0.5)
+  )
+  return(p)
 }
-# Plot Bollinger Bands if applicable (lowercase names from bb_cols)
-if (!is.null(bb_cols) && all(c(bb_cols$dn, bb_cols$mavg, bb_cols$up) %in% names(df))) {
-     p <- p %>% add_lines(x = ~date, y = ~get(bb_cols$up), name = paste0("BB Up (", bb_cols$n, ",", bb_cols$sd, ")"), line = list(color = 'rgba(65,105,225,0.5)', width = 1, dash = 'dash')) %>% add_lines(x = ~date, y = ~get(bb_cols$dn), name = paste0("BB Dn (", bb_cols$n, ",", bb_cols$sd, ")"), line = list(color = 'rgba(65,105,225,0.5)', width = 1, dash = 'dash')) %>% add_lines(x = ~date, y = ~get(bb_cols$mavg), name = paste0("BB MA (", bb_cols$n, ")"), line = list(color = 'rgba(160,32,240,0.6)', width = 1, dash = 'dot'))
-}
 
-# Plot Buy/Sell Markers
-if ("position_signal" %in% names(df)) {
-    df_signals <- df %>% arrange(date) %>% mutate(prev_signal = lag(position_signal, default = 0)) %>% filter(position_signal != prev_signal) %>% mutate(action = case_when(position_signal == 1 ~ "Buy", position_signal == -1 ~ "Sell", position_signal == 0 ~ "Exit"), marker_y = case_when(action == "Buy" ~ Low * 0.99, action == "Sell" ~ High * 1.01, TRUE ~ Close)) # Use Title Case OHLC
-    buy_entries <- df_signals %>% filter(action == "Buy"); sell_entries <- df_signals %>% filter(action == "Sell"); exit_signals <- df_signals %>% filter(action == "Exit")
-    if(nrow(buy_entries) > 0) { p <- p %>% add_markers(data = buy_entries, x = ~date, y = ~marker_y, inherit = FALSE, name = "Buy Entry", marker = list(color = 'green', size = 8, symbol = 'triangle-up')) }
-    if(nrow(sell_entries) > 0) { p <- p %>% add_markers(data = sell_entries, x = ~date, y = ~marker_y, inherit = FALSE, name = "Sell/Short Entry", marker = list(color = 'red', size = 8, symbol = 'triangle-down')) }
-    if(nrow(exit_signals) > 0) { p <- p %>% add_markers(data = exit_signals, x = ~date, y = ~marker_y, inherit = FALSE, name = "Exit Signal", marker = list(color = 'black', size = 6, symbol = 'x')) }
-}
-
-strategy_title <- switch(strategy, "MA Crossover" = paste("MA Crossover (", params$short_ma, "/", params$long_ma, ")"), "RSI Threshold" = paste("RSI (", params$rsi_period, ") Thr (", params$rsi_oversold, "/", params$rsi_overbought, ")"), "MACD Crossover" = "MACD Crossover (12/26/9)", "Bollinger Band Breakout" = paste("BB Breakout (", params$bb_n, "/", params$bb_sd, ")"), "Bollinger Band Reversion" = paste("BB Reversion (", params$bb_n, "/", params$bb_sd, ")"), "ATR Breakout" = paste("ATR Breakout (", params$atr_n, "/", params$atr_multiplier, "x)"), "Unknown Strategy")
-if (!is.null(params$require_volume_confirm) && params$require_volume_confirm) { strategy_title <- paste(strategy_title, "+ Vol Confirm (SMA", params$volume_sma_n, ")") }
-
-p <- p %>% layout( title = list(text = paste("Backtest:", strategy_title), x = 0.05), xaxis = list(title = "Date", rangeslider = list(visible = FALSE), showticklabels=TRUE), yaxis = list(title = "Price"), legend = list(orientation = "h", y = -0.2, xanchor = "center", x = 0.5) )
-return(p)
-```
-
-}
 
 # --- UI Definition ---
-
-ui \<- fluidPage( titlePanel("Crypto Dashboard: Live View, Forecast & Analysis"), sidebarLayout( sidebarPanel( width = 3, h4("Global Selections"), selectInput("symbol_selected", "Select Cryptocurrency:", choices = crypto_symbols_yahoo, selected = "BTC-USD"), hr(),
-
-```         
-        # --- Backtest Parameters Section ---
-        conditionalPanel(
-            condition = "input.main_tabs == 'Strategy Analysis'",
-            h4("Backtest Parameters"),
-            selectInput("strategy_select", "Select Strategy:",
-                        choices = c("MA Crossover", "RSI Threshold", "MACD Crossover",
-                                    "Bollinger Band Breakout", "Bollinger Band Reversion",
-                                    "ATR Breakout"),
-                        selected = "MA Crossover"),
-            dateRangeInput("backtest_date_range", "Select Date Range:", start = Sys.Date() - years(2), end = Sys.Date(), max = Sys.Date()),
-
-            conditionalPanel("input.strategy_select == 'MA Crossover'",
-                             numericInput("backtest_short_ma", "Short MA:", value = 50, min = 5, max = 150, step = 5),
-                             numericInput("backtest_long_ma", "Long MA:", value = 200, min = 50, max = 300, step = 10)),
-            conditionalPanel("input.strategy_select == 'RSI Threshold'",
-                             numericInput("backtest_rsi_period", "RSI Period:", value = 14, min = 5, max = 30),
-                             numericInput("backtest_rsi_oversold", "Oversold:", value = 30, min = 10, max = 50),
-                             numericInput("backtest_rsi_overbought", "Overbought:", value = 70, min = 50, max = 90)),
-            conditionalPanel("input.strategy_select == 'MACD Crossover'",
-                             p(em("Uses standard MACD (12/26/9). Optimization N/A."))),
-             conditionalPanel("input.strategy_select == 'Bollinger Band Breakout' || input.strategy_select == 'Bollinger Band Reversion'",
-                             numericInput("backtest_bb_n", "BB Period:", value = 20, min = 10, max = 50),
-                             numericInput("backtest_bb_sd", "BB Std Dev:", value = 2, min = 1.0, max = 3.0, step = 0.1)),
-             conditionalPanel("input.strategy_select == 'ATR Breakout'",
-                             numericInput("backtest_atr_n", "ATR Period:", value = 14, min = 5, max = 50),
-                             numericInput("backtest_atr_multiplier", "ATR Multiplier:", value = 2.0, min = 0.5, max = 5.0, step = 0.1)),
-
-            hr(),
-            h5("Optional: Volume Confirmation"),
-            checkboxInput("require_volume_confirm", "Require Vol > SMA for Signal?", value = FALSE),
-            conditionalPanel("input.require_volume_confirm == true",
-                numericInput("volume_sma_n", "Volume SMA Period:", value = 20, min = 10, max = 100, step = 5)
-            ),
-            hr(),
-            h5("Trading Costs (Per Side - Decimal)"),
-            numericInput("commission_pct", "Commission:", value = 0.001, min = 0, max = 0.05, step = 0.0005),
-            numericInput("slippage_pct", "Slippage:", value = 0.0005, min = 0, max = 0.05, step = 0.0005),
-            hr(),
-            actionButton("run_backtest", "Run Backtest", icon = icon("play"), class="btn-primary"),
-            hr(),
-            h4("Parameter Optimization"),
-             p(strong("Warning:"), em("Optimization finds the best parameters for past data, which may not predict future results (risk of overfitting). Use as an exploratory tool.")),
-            actionButton("optimize_params", "Optimize Parameters", icon = icon("search-dollar"), class="btn-warning"),
-            uiOutput("optimizationWarningUI"),
-            hr()
-        ), # End Backtest Conditional Panel
-
-        h4("Data Sources"),
-        p(strong("Live:"), "Binance API (Ticker)"),
-        p(strong("Historical:"), "Yahoo Finance / Local DB"),
-        p(strong("Storage:"), "Local SQLite DB (", basename(DB_FILE), ")"),
-        actionButton("update_hist_data", "Update Historical Data", icon = icon("sync")),
+ui <- fluidPage(
+  titlePanel("Crypto Dashboard: Live View, Forecast & Analysis"),
+  sidebarLayout(
+    sidebarPanel(
+      width = 3,
+      h4("Global Selections"),
+      selectInput("symbol_selected", "Select Cryptocurrency:", choices = crypto_symbols_yahoo, selected = "BTC-USD"),
+      hr(),
+      
+      # --- Backtest Parameters Section ---
+      conditionalPanel(
+        condition = "input.main_tabs == 'Strategy Analysis'",
+        h4("Backtest Parameters"),
+        selectInput("strategy_select", "Select Strategy:",
+                    choices = c("MA Crossover", "RSI Threshold", "MACD Crossover",
+                                "Bollinger Band Breakout", "Bollinger Band Reversion",
+                                "ATR Breakout"),
+                    selected = "MA Crossover"),
+        dateRangeInput("backtest_date_range", "Select Date Range:", start = Sys.Date() - years(2), end = Sys.Date(), max = Sys.Date()),
+        
+        # --- Strategy Specific Inputs ---
+        conditionalPanel("input.strategy_select == 'MA Crossover'",
+                         numericInput("backtest_short_ma", "Short MA:", value = 50, min = 5, max = 150, step = 5),
+                         numericInput("backtest_long_ma", "Long MA:", value = 200, min = 50, max = 300, step = 10)),
+        conditionalPanel("input.strategy_select == 'RSI Threshold'",
+                         numericInput("backtest_rsi_period", "RSI Period:", value = 14, min = 5, max = 30),
+                         numericInput("backtest_rsi_oversold", "Oversold:", value = 30, min = 10, max = 50),
+                         numericInput("backtest_rsi_overbought", "Overbought:", value = 70, min = 50, max = 90)),
+        conditionalPanel("input.strategy_select == 'MACD Crossover'",
+                         p(em("Uses standard MACD (12/26/9). Optimization N/A."))),
+        conditionalPanel("input.strategy_select == 'Bollinger Band Breakout' || input.strategy_select == 'Bollinger Band Reversion'",
+                         numericInput("backtest_bb_n", "BB Period:", value = 20, min = 10, max = 50),
+                         numericInput("backtest_bb_sd", "BB Std Dev:", value = 2, min = 1.0, max = 3.0, step = 0.1)),
+        conditionalPanel("input.strategy_select == 'ATR Breakout'",
+                         numericInput("backtest_atr_n", "ATR Period:", value = 14, min = 5, max = 50),
+                         numericInput("backtest_atr_multiplier", "ATR Multiplier:", value = 2.0, min = 0.5, max = 5.0, step = 0.1)),
+        
         hr(),
-        p(em("Live view polls approx. every", LIVE_REFRESH_INTERVAL/1000, "sec."))
-
+        h5("Optional: Volume Confirmation"),
+        checkboxInput("require_volume_confirm", "Require Vol > SMA for Signal?", value = FALSE),
+        conditionalPanel("input.require_volume_confirm == true",
+                         numericInput("volume_sma_n", "Volume SMA Period:", value = 20, min = 10, max = 100, step = 5)
+        ),
+        
+        hr(),
+        h5("Trading Costs (Per Side - Decimal)"),
+        numericInput("commission_pct", "Commission:", value = 0.001, min = 0, max = 0.05, step = 0.0005),
+        numericInput("slippage_pct", "Slippage:", value = 0.0005, min = 0, max = 0.05, step = 0.0005),
+        
+        hr(),
+        actionButton("run_backtest", "Run Backtest", icon = icon("play"), class="btn-primary"),
+        hr(),
+        h4("Parameter Optimization"),
+        p(strong("Warning:"), em("Optimization finds the best parameters for past data, which may not predict future results (risk of overfitting). Use as an exploratory tool.")),
+        actionButton("optimize_params", "Optimize Parameters", icon = icon("search-dollar"), class="btn-warning"),
+        uiOutput("optimizationWarningUI"), # Placeholder for warning messages
+        hr()
+      ), # End Backtest Conditional Panel
+      
+      # --- General Sidebar Info ---
+      h4("Data Sources"),
+      p(strong("Live:"), "Binance API (Ticker)"),
+      p(strong("Historical:"), "Yahoo Finance / Local DB"),
+      p(strong("Storage:"), "Local SQLite DB (", basename(DB_FILE), ")"),
+      actionButton("update_hist_data", "Update Historical Data", icon = icon("sync")),
+      hr(),
+      p(em("Live view polls approx. every", LIVE_REFRESH_INTERVAL/1000, "sec."))
+      
     ), # End sidebarPanel
-
+    
     # --- Main Panel with Tabs ---
     mainPanel(
-        width = 9,
-        tabsetPanel(
-            id = "main_tabs",
-            tabPanel("Live View",
-                     fluidRow( column(6, h4("Latest Price (Binance)"), wellPanel(uiOutput("livePriceUI"), div(textOutput("liveTime"), style="font-size: small; color: grey;"))),
-                               column(6, h4("Recent Movement"), wellPanel(uiOutput("liveChangeInfoUI"))) ),
-                     hr(), h4(textOutput("livePlotTitle")), plotOutput("livePlot", height="350px") %>% withSpinner(color="#0dc5c1"),
-                     conditionalPanel( condition = "output.debugEnabled == true", hr(), h4("Debug Log"), verbatimTextOutput("debugOutput") )
-                     ),
-            tabPanel("Historical Forecast",
-                      h4("Configure Forecast Parameters"),
-                     fluidRow( column(6, sliderInput("hist_days", "Hist. Period (Days):", min=60, max=1095, value=365, step=15)),
-                               column(6, sliderInput("horizon", "Forecast Horizon (Days):", min=7, max=180, value=30, step=1)) ),
-                     actionButton("run_forecast", "Generate Forecast", icon = icon("chart-line"), class = "btn-primary"),
-                     hr(), h4(textOutput("forecastPlotTitle")), plotOutput("forecastPlot", height = "450px") %>% withSpinner(color="#0dc5c1"),
-                     hr(), h4("Forecast Model Summary (auto.arima)"), verbatimTextOutput("forecastSummary")
-                     ),
-            tabPanel("Strategy Analysis",
-                     h4(textOutput("backtestTitle")),
-                     plotlyOutput("backtestChart", height = "600px") %>% withSpinner(color="#0dc5c1"),
-                     hr(),
-                     tabsetPanel(
-                         type = "tabs",
-                         tabPanel("Performance Metrics",
-                                  fluidRow(
-                                      column(6, tableOutput("backtestMetricsTable1")),
-                                      column(6, tableOutput("backtestMetricsTable2"))
-                                  )
-                         ),
-                         tabPanel("Trade Log",
-                                  DT::dataTableOutput("tradeLogTable") %>% withSpinner(color="#0dc5c1")
-                         ),
-                         tabPanel("Optimization Results",
-                                  h5("Optimization Results (Ranked by Sharpe Ratio)"),
-                                  p(strong("Warning:"), em("High performance on past data does not guarantee future results due to potential overfitting.")),
-                                  DT::dataTableOutput("optimizationResultsTable") %>% withSpinner(color="#0dc5c1")
-                         )
-                     )
-            ) # End Strategy Analysis TabPanel
-        ) # End tabsetPanel
+      width = 9,
+      tabsetPanel(
+        id = "main_tabs",
+        tabPanel("Live View",
+                 fluidRow(
+                   column(6, h4("Latest Price (Binance)"), wellPanel(uiOutput("livePriceUI"), div(textOutput("liveTime"), style="font-size: small; color: grey;"))),
+                   column(6, h4("Recent Movement"), wellPanel(uiOutput("liveChangeInfoUI")))
+                 ),
+                 hr(),
+                 h4(textOutput("livePlotTitle")),
+                 plotOutput("livePlot", height="350px") %>% withSpinner(color="#0dc5c1"),
+                 # Conditional Debug Output
+                 conditionalPanel(
+                   condition = "output.debugEnabled == true", # Condition based on reactive output
+                   hr(),
+                   h4("Debug Log"),
+                   verbatimTextOutput("debugOutput")
+                 )
+        ),
+        tabPanel("Historical Forecast",
+                 h4("Configure Forecast Parameters"),
+                 fluidRow(
+                   column(6, sliderInput("hist_days", "Hist. Period (Days):", min=60, max=1095, value=365, step=15)),
+                   column(6, sliderInput("horizon", "Forecast Horizon (Days):", min=7, max=180, value=30, step=1))
+                 ),
+                 actionButton("run_forecast", "Generate Forecast", icon = icon("chart-line"), class = "btn-primary"),
+                 hr(),
+                 h4(textOutput("forecastPlotTitle")),
+                 plotOutput("forecastPlot", height = "450px") %>% withSpinner(color="#0dc5c1"),
+                 hr(),
+                 h4("Forecast Model Summary (auto.arima)"),
+                 verbatimTextOutput("forecastSummary")
+        ),
+        tabPanel("Strategy Analysis",
+                 h4(textOutput("backtestTitle")),
+                 # Use plotlyOutput for the backtest chart
+                 plotlyOutput("backtestChart", height = "600px") %>% withSpinner(color="#0dc5c1"),
+                 hr(),
+                 tabsetPanel(
+                   type = "tabs",
+                   tabPanel("Performance Metrics",
+                            fluidRow(
+                              column(6, tableOutput("backtestMetricsTable1")),
+                              column(6, tableOutput("backtestMetricsTable2"))
+                            )
+                   ),
+                   tabPanel("Trade Log",
+                            DT::dataTableOutput("tradeLogTable") %>% withSpinner(color="#0dc5c1")
+                   ),
+                   tabPanel("Optimization Results",
+                            h5("Optimization Results (Ranked by Sharpe Ratio)"),
+                            p(strong("Warning:"), em("High performance on past data does not guarantee future results due to potential overfitting.")),
+                            DT::dataTableOutput("optimizationResultsTable") %>% withSpinner(color="#0dc5c1")
+                   )
+                 ) # End Inner TabsetPanel
+        ) # End Strategy Analysis TabPanel
+      ) # End tabsetPanel
     ) # End mainPanel
-) # End sidebarLayout
-```
+  ) # End sidebarLayout
+) # End fluidPage (UI)
 
-) \# End fluidPage (UI)
 
 # --- Server Logic Definition ---
-
-server \<- function(input, output, session) {
-
-```         
-# --- Database Connection & Setup ---
-db <- connect_db(); if (is.null(db)) stopApp("Database connection failed.")
-init_db(db)
-onSessionEnded(function() { message("Disconnecting from database..."); dbDisconnect(db); message("Database disconnected.") })
-
-# --- Debug Setup ---
-output$debugEnabled <- reactive({ DEBUG_MODE })
-outputOptions(output, "debugEnabled", suspendWhenHidden = FALSE)
-debug_messages <- reactiveVal(character(0))
-debug_log <- function(msg, ...) { if (DEBUG_MODE) { full_msg <- sprintf(msg, ...); timestamp <- format(Sys.time(), "[%Y-%m-%d %H:%M:%OS3]"); log_msg <- paste(timestamp, full_msg); current_msgs <- isolate(debug_messages()); max_log_lines <- 1000; new_msgs <- c(current_msgs, log_msg); if (length(new_msgs) > max_log_lines) new_msgs <- new_msgs[-(1:(length(new_msgs)-max_log_lines))]; debug_messages(new_msgs); cat(log_msg, "\n") } }
-output$debugOutput <- renderPrint({ req(DEBUG_MODE); cat("-- DEBUG LOG (Last", length(debug_messages()), "Lines) --\n"); cat(paste(rev(debug_messages()), collapse = "\n")) })
-
-# --- Shared Reactives ---
-selected_yahoo_symbol <- reactive({ input$symbol_selected })
-selected_binance_symbol <- reactive({ sym <- symbol_map_binance[selected_yahoo_symbol()]; if (is.null(sym) || is.na(sym) || !nzchar(sym)){ NULL } else { sym } })
-
-# --- Live View Server Logic ---
-initial_empty_xts <- xts(matrix(numeric(0), ncol = 1, dimnames = list(NULL, "Price")), order.by = Sys.time()[0], tzone = "UTC")
-live_xts_data <- reactiveVal(initial_empty_xts)
-auto_refresh_timer <- reactiveTimer(intervalMs = LIVE_REFRESH_INTERVAL)
-observeEvent(selected_yahoo_symbol(), { live_xts_data(initial_empty_xts); debug_log("Live view reset for symbol: %s", selected_yahoo_symbol()) })
-observeEvent(auto_refresh_timer(), {
-    b_sym <- isolate(selected_binance_symbol()); if (is.null(b_sym)) return()
-    latest_point_for_db <- NULL; temp_final_data <- NULL; error_occurred_flag <- FALSE
+server <- function(input, output, session) {
+  
+  # --- Database Connection & Setup ---
+  db <- connect_db(); if (is.null(db)) stopApp("Database connection failed.")
+  init_db(db)
+  onSessionEnded(function() { message("Disconnecting from database..."); dbDisconnect(db); message("Database disconnected.") })
+  
+  # --- Debug Setup ---
+  output$debugEnabled <- reactive({ DEBUG_MODE })
+  outputOptions(output, "debugEnabled", suspendWhenHidden = FALSE) # Make available to JS conditions
+  
+  debug_messages <- reactiveVal(character(0))
+  debug_log <- function(msg, ...) {
+    if (DEBUG_MODE) {
+      full_msg <- sprintf(msg, ...)
+      timestamp <- format(Sys.time(), "[%Y-%m-%d %H:%M:%OS3]")
+      log_msg <- paste(timestamp, full_msg)
+      current_msgs <- isolate(debug_messages())
+      max_log_lines <- 1000 # Limit log length
+      new_msgs <- c(current_msgs, log_msg)
+      if (length(new_msgs) > max_log_lines) {
+        new_msgs <- new_msgs[-(1:(length(new_msgs)-max_log_lines))] # Keep latest lines
+      }
+      debug_messages(new_msgs)
+      cat(log_msg, "\n") # Also print to R console if debugging interactively
+    }
+  }
+  output$debugOutput <- renderPrint({
+    req(DEBUG_MODE)
+    cat("-- DEBUG LOG (Last", length(debug_messages()), "Lines) --\n")
+    cat(paste(rev(debug_messages()), collapse = "\n")) # Show newest first
+  })
+  
+  # --- Shared Reactives ---
+  selected_yahoo_symbol <- reactive({ input$symbol_selected })
+  selected_binance_symbol <- reactive({
+    sym <- symbol_map_binance[selected_yahoo_symbol()]
+    # Handle cases where the mapping might be missing or NA
+    if (is.null(sym) || is.na(sym) || !nzchar(sym)){
+      NULL
+    } else {
+      sym
+    }
+  })
+  
+  # --- Live View Server Logic ---
+  # Initialize with an empty xts object with the correct structure
+  initial_empty_xts <- xts(matrix(numeric(0), ncol = 1, dimnames = list(NULL, "Price")),
+                           order.by = Sys.time()[0], tzone = "UTC")
+  live_xts_data <- reactiveVal(initial_empty_xts)
+  
+  auto_refresh_timer <- reactiveTimer(intervalMs = LIVE_REFRESH_INTERVAL)
+  
+  # Reset live data when symbol changes
+  observeEvent(selected_yahoo_symbol(), {
+    live_xts_data(initial_empty_xts) # Reset to empty xts
+    debug_log("Live view reset for symbol: %s", selected_yahoo_symbol())
+  })
+  
+  # Fetch live data periodically
+  observeEvent(auto_refresh_timer(), {
+    b_sym <- isolate(selected_binance_symbol())
+    if (is.null(b_sym)) return() # Don't fetch if symbol mapping failed
+    
+    latest_point_for_db <- NULL
+    temp_final_data <- NULL
+    error_occurred_flag <- FALSE
+    
     tryCatch({
-        current_data <- isolate(live_xts_data()); api_fetch_time <- Sys.time()
-        url <- paste0(BINANCE_API_URL,"?symbol=",b_sym); req <- request(url); resp <- req %>% req_timeout(seconds=10) %>% req_perform()
-        if(resp_status(resp)!=200) stop(paste("API Error:",resp_status(resp)))
-        json_data <- resp %>% resp_body_json(); price_val <- json_data$price; if(is.null(price_val)) stop("Price NULL")
-        price_num <- suppressWarnings(as.numeric(price_val)); if(!is.finite(price_num)) stop("Price non-numeric")
-        timestamp_utc <- as.POSIXct(api_fetch_time, tz="UTC")
-        latest_point <- xts(matrix(price_num, ncol=1, dimnames=list(NULL,"Price")), order.by=timestamp_utc, tzone="UTC")
-        if(!inherits(latest_point,"xts")||nrow(latest_point)!=1) stop("Invalid xts")
-        latest_point_for_db <- list(symbol=b_sym,time=timestamp_utc,price=price_num)
-        current_nrow <- nrow(current_data); should_append <- FALSE
-        if(current_nrow == 0){ should_append <- TRUE
-        } else { idx_current <- index(current_data); last_idx <- last(idx_current); new_idx <- index(latest_point)
-            if (!is.null(last_idx) && inherits(last_idx, "POSIXct") && length(last_idx) == 1 && !is.na(last_idx) && !is.null(new_idx) && inherits(new_idx, "POSIXct") && length(new_idx) == 1 && !is.na(new_idx)) { if (new_idx > last_idx) { should_append <- TRUE } else { debug_log("Live Skip: New (%s) <= Last (%s)", format(new_idx), format(last_idx)) }
-            } else { debug_log("Live Warning: Invalid timestamps, forcing append."); should_append <- TRUE } }
-        window_start_utc <- as.POSIXct(format(Sys.time() - minutes(LIVE_CHART_WINDOW_MINUTES), tz = "UTC", usetz = TRUE), tz = "UTC")
-        if(should_append){ updated_data <- rbind(current_data, latest_point) } else { updated_data <- current_data }
-        idx_updated <- index(updated_data)
-        if(inherits(idx_updated,"POSIXct") && length(idx_updated) == nrow(updated_data)){ temp_final_data <- updated_data[idx_updated >= window_start_utc, ]
-        } else { debug_log("Live Warning: Index issue during filtering."); temp_final_data <- updated_data }
-    }, error=function(e){ error_occurred_flag <<- TRUE; debug_log(">>> Error Live Fetch/Process for %s: %s", b_sym, e$message) })
-    if(!error_occurred_flag && !is.null(temp_final_data) && inherits(temp_final_data, "xts")){ if(!identical(isolate(live_xts_data()), temp_final_data)){ live_xts_data(temp_final_data) } }
-    if(!error_occurred_flag && !is.null(latest_point_for_db)){ insert_success <- insert_ticks_safe(db, latest_point_for_db$symbol, latest_point_for_db$time, latest_point_for_db$price) }
-})
-live_values_reactive <- reactive({
-    data <- live_xts_data(); results <- list(price=NA_real_, time=NA, price_str="Waiting...", change_html="<span>Waiting...</span>", error_msg=NULL)
+      current_data <- isolate(live_xts_data()) # Get current data without triggering reactivity
+      api_fetch_time <- Sys.time() # Record time before API call
+      
+      # Fetch from Binance
+      url <- paste0(BINANCE_API_URL,"?symbol=",b_sym)
+      req <- request(url)
+      resp <- req %>% req_timeout(seconds=10) %>% req_perform()
+      
+      if(resp_status(resp)!=200) stop(paste("API Error:",resp_status(resp)))
+      json_data <- resp %>% resp_body_json()
+      price_val <- json_data$price
+      if(is.null(price_val)) stop("Price NULL")
+      price_num <- suppressWarnings(as.numeric(price_val))
+      if(!is.finite(price_num)) stop("Price non-numeric")
+      
+      timestamp_utc <- as.POSIXct(api_fetch_time, tz="UTC") # Use recorded fetch time as timestamp
+      
+      # Create xts point for this observation
+      latest_point <- xts(matrix(price_num, ncol=1, dimnames=list(NULL,"Price")), order.by=timestamp_utc, tzone="UTC")
+      if(!inherits(latest_point,"xts")||nrow(latest_point)!=1) stop("Invalid xts point created")
+      
+      # Prepare data for DB insertion
+      latest_point_for_db <- list(symbol=b_sym,time=timestamp_utc,price=price_num)
+      
+      # Logic to decide whether to append the new point
+      current_nrow <- nrow(current_data)
+      should_append <- FALSE
+      if(current_nrow == 0){
+        should_append <- TRUE # Always append if starting empty
+      } else {
+        idx_current <- index(current_data)
+        last_idx <- last(idx_current)
+        new_idx <- index(latest_point)
+        # Check if timestamps are valid POSIXct and new is strictly after last
+        if (!is.null(last_idx) && inherits(last_idx, "POSIXct") && length(last_idx) == 1 && !is.na(last_idx) &&
+            !is.null(new_idx) && inherits(new_idx, "POSIXct") && length(new_idx) == 1 && !is.na(new_idx)) {
+          if (new_idx > last_idx) { should_append <- TRUE } else { debug_log("Live Skip: New (%s) <= Last (%s)", format(new_idx), format(last_idx)) }
+        } else { debug_log("Live Warning: Invalid timestamps, forcing append."); should_append <- TRUE }
+      }
+      
+      # Determine the start time for the plot window
+      window_start_utc <- as.POSIXct(format(Sys.time() - minutes(LIVE_CHART_WINDOW_MINUTES), tz = "UTC", usetz = TRUE), tz = "UTC")
+      
+      # Append if needed, then filter by time window
+      if(should_append){ updated_data <- rbind(current_data, latest_point) } else { updated_data <- current_data }
+      
+      # Filter data to the time window AFTER appending
+      idx_updated <- index(updated_data)
+      if(inherits(idx_updated,"POSIXct") && length(idx_updated) == nrow(updated_data)){
+        temp_final_data <- updated_data[idx_updated >= window_start_utc, ]
+      } else {
+        debug_log("Live Warning: Index issue during filtering. Using unfiltered updated data.");
+        temp_final_data <- updated_data # Fallback
+      }
+      
+    }, error=function(e){
+      error_occurred_flag <<- TRUE
+      debug_log(">>> Error Live Fetch/Process for %s: %s", b_sym, e$message)
+    }) # End tryCatch
+    
+    # Update reactiveVal only if no error and data changed
+    if(!error_occurred_flag && !is.null(temp_final_data) && inherits(temp_final_data, "xts")){
+      # Check if data actually changed before updating reactiveVal to avoid unnecessary plot redraws
+      if(!identical(isolate(live_xts_data()), temp_final_data)){
+        live_xts_data(temp_final_data)
+      }
+    }
+    
+    # Insert into DB if fetch was successful
+    if(!error_occurred_flag && !is.null(latest_point_for_db)){
+      insert_success <- insert_ticks_safe(db, latest_point_for_db$symbol, latest_point_for_db$time, latest_point_for_db$price)
+      # Optional: log DB insert success/failure
+      # if (!insert_success) debug_log("DB tick insert failed for %s", b_sym)
+    }
+  }) # End observeEvent(auto_refresh_timer)
+  
+  # Reactive for calculating live display values (price, change)
+  live_values_reactive <- reactive({
+    data <- live_xts_data()
+    results <- list(price=NA_real_, time=NA, price_str="Waiting...", change_html="<span>Waiting...</span>", error_msg=NULL)
+    
     tryCatch({
-        req(inherits(data, "xts"), nrow(data) >= 1, "Price" %in% colnames(data)); last_obs <- last(data); req(nrow(last_obs) == 1); idx_last <- index(last_obs); results$time <- last(idx_last); req(inherits(results$time, "POSIXct")); results$price <- as.numeric(coredata(last_obs)[1, "Price"]); req(is.finite(results$price)); price_decimals <- ifelse(results$price < 0.01, 6, ifelse(results$price < 10, 4, 2)); results$price_str <- format(round(results$price, price_decimals), nsmall=price_decimals, big.mark=",");
-        if(nrow(data) >= 2){ prev_price <- tryCatch(as.numeric(coredata(data[nrow(data)-1, "Price"])), error=function(e) NA_real_); if(is.finite(prev_price) && prev_price != 0){ change_val <- results$price - prev_price; change_pct <- (change_val / prev_price) * 100; change_color <- if(change_val > 0) "green" else if(change_val < 0) "red" else "grey"; change_sign <- if(change_val >= 0) "+" else ""; results$change_html <- sprintf("<span style='color:%s; font-weight:bold;'>%s%.*f (%s%.2f%%)</span>", change_color, change_sign, price_decimals, abs(change_val), change_sign, abs(change_pct)) } else { results$change_html <- "<span>Change N/A</span>" }
-        } else { results$change_html <- "<span>(Need 2+ points)</span>" }
-    }, error=function(e){ debug_log(">>> Error live values calc: %s", e$message); results$error_msg <- "Calc Error"; results$price_str <- "Error"; results$change_html <- "<span style='color:red;'>Error</span>" })
+      # Require valid xts data with at least one row and a "Price" column
+      req(inherits(data, "xts"), nrow(data) >= 1, "Price" %in% colnames(data));
+      last_obs <- last(data); req(nrow(last_obs) == 1); # Get the last observation
+      idx_last <- index(last_obs); results$time <- last(idx_last); # Get timestamp
+      req(inherits(results$time, "POSIXct")); # Ensure time is valid
+      results$price <- as.numeric(coredata(last_obs)[1, "Price"]); # Get price
+      req(is.finite(results$price)); # Ensure price is valid number
+      
+      # Format price string based on magnitude
+      price_decimals <- ifelse(results$price < 0.01, 6, ifelse(results$price < 10, 4, 2));
+      results$price_str <- format(round(results$price, price_decimals), nsmall=price_decimals, big.mark=",");
+      
+      # Calculate change if there are at least 2 data points
+      if(nrow(data) >= 2){
+        prev_price <- tryCatch(as.numeric(coredata(data[nrow(data)-1, "Price"])), error=function(e) NA_real_); # Get second-to-last price
+        if(is.finite(prev_price) && prev_price != 0){
+          change_val <- results$price - prev_price;
+          change_pct <- (change_val / prev_price) * 100;
+          change_color <- if(change_val > 0) "green" else if(change_val < 0) "red" else "grey";
+          change_sign <- if(change_val >= 0) "+" else "";
+          results$change_html <- sprintf("<span style='color:%s; font-weight:bold;'>%s%.*f (%s%.2f%%)</span>",
+                                         change_color, change_sign, price_decimals, abs(change_val),
+                                         change_sign, abs(change_pct))
+        } else { results$change_html <- "<span>Change N/A</span>" }
+      } else { results$change_html <- "<span>(Need 2+ points)</span>" }
+    }, error=function(e){
+      debug_log(">>> Error live values calc: %s", e$message);
+      results$error_msg <- "Calc Error"; results$price_str <- "Error"; results$change_html <- "<span style='color:red;'>Error</span>"
+    })
     return(results)
-})
-output$livePriceUI <- renderUI({ v <- live_values_reactive(); if (!is.null(v$error_msg)) { strong(style="color:red;",v$error_msg) } else { h3(v$price_str) } })
-output$liveTime <- renderText({ v <- live_values_reactive(); if (inherits(v$time, "POSIXct")) { paste("As of:", format(v$time, "%H:%M:%S %Z")) } else { "Time: N/A" } })
-output$liveChangeInfoUI <- renderUI({ HTML(live_values_reactive()$change_html) })
-output$livePlotTitle <- renderText({ paste("Recent Trend:", selected_yahoo_symbol(), "(Live, approx.", LIVE_CHART_WINDOW_MINUTES, "min)") })
-output$livePlot <- renderPlot({ data_to_plot <- live_xts_data(); req(inherits(data_to_plot, "xts")); title_txt <- paste("Live Price:", selected_yahoo_symbol()); if(nrow(data_to_plot) < 2) { plot(1, type="n", axes=FALSE, xlab="", ylab=""); title(main=ifelse(nrow(data_to_plot)==0,"Waiting...","Need more data..."), col.main="grey"); grid(); return() }; tryCatch({ plot(index(data_to_plot), coredata(data_to_plot$Price), type='l', xlab="Time (UTC)", ylab="Price", main=title_txt, col="blue", lwd=1.5); points(last(index(data_to_plot)), last(coredata(data_to_plot$Price)), pch=19, col="red"); grid() }, error = function(e) { plot(1, type="n", axes=FALSE, xlab="", ylab=""); title(main="Plot Error", col.main="red"); text(1,1, e$message, col="red"); grid(); debug_log("!!! Live Plot Error: %s", e$message) }) })
-
-# --- Historical Data Update Server Logic ---
-observeEvent(input$update_hist_data, {
-    sym <- selected_yahoo_symbol(); id <- showNotification(paste("Fetching historical data for", sym, "..."), duration = NULL, closeButton = FALSE, type = "message"); on.exit(removeNotification(id), add = TRUE)
+  })
+  
+  # --- Live View Outputs ---
+  output$livePriceUI <- renderUI({ v <- live_values_reactive(); if (!is.null(v$error_msg)) { strong(style="color:red;",v$error_msg) } else { h3(v$price_str) } })
+  output$liveTime <- renderText({ v <- live_values_reactive(); if (inherits(v$time, "POSIXct")) { paste("As of:", format(v$time, "%H:%M:%S %Z")) } else { "Time: N/A" } })
+  output$liveChangeInfoUI <- renderUI({ HTML(live_values_reactive()$change_html) })
+  output$livePlotTitle <- renderText({ paste("Recent Trend:", selected_yahoo_symbol(), "(Live, approx.", LIVE_CHART_WINDOW_MINUTES, "min)") })
+  output$livePlot <- renderPlot({
+    data_to_plot <- live_xts_data()
+    req(inherits(data_to_plot, "xts")) # Require valid xts data
+    title_txt <- paste("Live Price:", selected_yahoo_symbol())
+    
+    # Handle cases with insufficient data for plotting
+    if(nrow(data_to_plot) < 2) {
+      plot(1, type="n", axes=FALSE, xlab="", ylab="");
+      title(main=ifelse(nrow(data_to_plot)==0,"Waiting for data...","Need more data to plot..."), col.main="grey"); grid(); return()
+    };
+    
+    # Attempt to plot
     tryCatch({
-        fetch_start_date <- Sys.Date() - years(10); debug_log("Fetching Yahoo: %s from %s", sym, fetch_start_date)
-        hist_data <- getSymbols(sym, src = "yahoo", from = fetch_start_date, auto.assign = FALSE)
-        req(inherits(hist_data, "xts"), nrow(hist_data) > 0)
-        debug_log("Fetched %d rows from Yahoo for %s", nrow(hist_data), sym)
-        bars_df <- data.frame( symbol_yahoo = sym, date = index(hist_data), open = as.numeric(Op(hist_data)), high = as.numeric(Hi(hist_data)), low = as.numeric(Lo(hist_data)), close = as.numeric(Cl(hist_data)), volume = as.numeric(Vo(hist_data)), adjusted = as.numeric(Ad(hist_data)), stringsAsFactors = FALSE)
-        names(bars_df) <- tolower(names(bars_df)); names(bars_df)[names(bars_df) == "index"] <- "date"
-        required_cols <- c("symbol_yahoo", "date", "open", "high", "low", "close", "volume", "adjusted")
-        missing_cols <- setdiff(required_cols, names(bars_df)); if(length(missing_cols)>0) stop(paste("Missing cols:", paste(missing_cols, collapse=",")))
-        bars_df_clean <- na.omit(bars_df[, required_cols])
-        if(nrow(bars_df_clean) > 0) {
-            debug_log("Attempting DB insert/replace for %d bars for %s", nrow(bars_df_clean), sym)
-            insert_success <- insert_daily_bars_safe(db, bars_df_clean)
-            if(insert_success) { showNotification(paste("Updated historical data for", sym, "(", nrow(bars_df_clean), "bars)"), type="message", duration=5) }
-            else { showNotification(paste("Failed DB update for", sym), type="warning", duration=8) }
-        } else { showNotification(paste("No valid historical rows fetched/cleaned for", sym), type="warning", duration=8) }
-    }, error = function(e) { showNotification(paste("Error updating", sym, ":", e$message), type="error", duration=10); debug_log("!!! Error update_hist_data for %s: %s", sym, e$message) })
-})
-
-# --- Historical Forecast Server Logic ---
-historical_data_reactive_forecast <- eventReactive(input$run_forecast,{
-    sym <- selected_yahoo_symbol(); hist_days <- input$hist_days; start_date <- Sys.Date() - days(hist_days); id <- showNotification(paste("Forecast: Fetching data for", sym, "..."), duration=NULL, closeButton=FALSE); on.exit(removeNotification(id), add = TRUE)
+      plot(index(data_to_plot), coredata(data_to_plot$Price), type='l',
+           xlab="Time (UTC)", ylab="Price", main=title_txt, col="blue", lwd=1.5);
+      # Add a point for the last price
+      points(last(index(data_to_plot)), last(coredata(data_to_plot$Price)), pch=19, col="red");
+      grid()
+    }, error = function(e) {
+      # Fallback plot on error
+      plot(1, type="n", axes=FALSE, xlab="", ylab="");
+      title(main="Plot Error", col.main="red"); text(1,1, e$message, col="red"); grid();
+      debug_log("!!! Live Plot Error: %s", e$message)
+    })
+  })
+  
+  # --- Historical Data Update Server Logic ---
+  observeEvent(input$update_hist_data, {
+    sym <- selected_yahoo_symbol()
+    id <- showNotification(paste("Fetching historical data for", sym, "..."), duration = NULL, closeButton = FALSE, type = "message")
+    on.exit(removeNotification(id), add = TRUE) # Ensure notification is removed
+    
     tryCatch({
-        debug_log("Forecast: DB fetch %s from %s", sym, start_date); data_df <- get_daily_bars(db, sym, start_date, Sys.Date());
-        if(nrow(data_df) < 30) { debug_log("Forecast: DB low data (%d), try Yahoo.", nrow(data_df)); showNotification("DB data low, fetching Yahoo...", duration=3); data_yahoo <- getSymbols(sym, src="yahoo", from=start_date, auto.assign=FALSE); req(inherits(data_yahoo,"xts"), nrow(data_yahoo) > 30); price_col_xts <- if(has.Ad(data_yahoo)) Ad(data_yahoo) else Cl(data_yahoo);
-        } else { debug_log("Forecast: Using %d DB rows.", nrow(data_df)); price_col_name <- if("adjusted" %in% names(data_df) && any(!is.na(data_df$adjusted))) "adjusted" else "close"; price_col_xts <- xts(data_df[[price_col_name]], order.by=data_df$date); }
-        price_col_xts <- price_col_xts[!is.na(price_col_xts[,1]),]; req(nrow(price_col_xts) > 30); price_ts <- ts(coredata(price_col_xts[,1]), frequency=7); showNotification(paste("Forecast: Using", nrow(price_col_xts), "points."), duration=3); return(list(ts=price_ts, symbol=sym, dates = index(price_col_xts)))
-    },error=function(e){ showNotification(paste("Forecast Data Error:", e$message), duration=10, type="error"); debug_log("!!! Forecast data error %s: %s", sym, e$message); return(NULL)}) })
-forecast_result_reactive <- reactive({ data_list <- historical_data_reactive_forecast(); req(data_list, !is.null(data_list$ts)); ts_data <- data_list$ts; horizon <- input$horizon; id <- showNotification("Fitting forecast model...", duration=NULL, closeButton=FALSE); on.exit(removeNotification(id), add = TRUE); tryCatch({ fit <- auto.arima(ts_data, seasonal=TRUE, stepwise=TRUE, approximation=TRUE, allowdrift=TRUE, allowmean=TRUE); forecast_obj <- forecast(fit, h=horizon); showNotification("Forecast complete.", duration=5); debug_log("Forecast fitted %s. Model: %s", data_list$symbol, forecast_obj$method); return(list(forecast=forecast_obj, fit=fit)) },error=function(e){ showNotification(paste("Forecast Model Error:", e$message), duration=10, type="error"); debug_log("!!! Forecast model error %s: %s", data_list$symbol, e$message); return(NULL)}) })
-output$forecastPlot <- renderPlot({ data_list <- historical_data_reactive_forecast(); forecast_list <- forecast_result_reactive(); req(data_list, forecast_list); tryCatch({ autoplot(forecast_list$forecast) + ggtitle(paste("Price Forecast:", data_list$symbol)) + xlab("Time") + ylab("Price") + theme_minimal(base_size=14) + labs(caption=paste("Model:", forecast_list$forecast$method)) + theme(plot.title = element_text(hjust = 0.5)) }, error=function(e){ plot(1, type="n", axes=FALSE, xlab="", ylab=""); title(main="Forecast Plot Error", col.main="red"); text(1,1,e$message, col="red"); grid(); debug_log("!!! Forecast Plot Error: %s", e$message) }) })
-output$forecastPlotTitle <- renderText({ data_list <- historical_data_reactive_forecast(); req(data_list); paste("Historical Price & Forecast:", data_list$symbol) })
-output$forecastSummary <- renderPrint({ forecast_list <- forecast_result_reactive(); req(forecast_list); cat("-- ARIMA Model Summary --\n"); print(summary(forecast_list$fit)); cat("\n-- Forecast Values --\n"); forecast_df <- data.frame( PointForecast = forecast_list$forecast$mean, Lo.80 = forecast_list$forecast$lower[, "80%"], Hi.80 = forecast_list$forecast$upper[, "80%"], Lo.95 = forecast_list$forecast$lower[, "95%"], Hi.95 = forecast_list$forecast$upper[, "95%"]); print(forecast_df) })
-
-# === Strategy Analysis Logic (Tab 3) ===
-
-# --- Reactive for Single Backtest Run ---
-backtest_run <- eventReactive(input$run_backtest, {
+      fetch_start_date <- Sys.Date() - years(10) # Fetch up to 10 years
+      debug_log("Fetching Yahoo: %s from %s", sym, fetch_start_date)
+      hist_data <- getSymbols(sym, src = "yahoo", from = fetch_start_date, auto.assign = FALSE)
+      req(inherits(hist_data, "xts"), nrow(hist_data) > 0) # Require valid data
+      debug_log("Fetched %d rows from Yahoo for %s", nrow(hist_data), sym)
+      
+      # Convert xts to dataframe with lowercase names
+      bars_df <- data.frame(
+        symbol_yahoo = sym,
+        date = index(hist_data),
+        open = as.numeric(Op(hist_data)),
+        high = as.numeric(Hi(hist_data)),
+        low = as.numeric(Lo(hist_data)),
+        close = as.numeric(Cl(hist_data)),
+        volume = as.numeric(Vo(hist_data)),
+        adjusted = as.numeric(Ad(hist_data)),
+        stringsAsFactors = FALSE
+      )
+      # Ensure names are lowercase and date is character for DB insert function
+      names(bars_df) <- tolower(names(bars_df)); names(bars_df)[names(bars_df) == "index"] <- "date"
+      required_cols <- c("symbol_yahoo", "date", "open", "high", "low", "close", "volume", "adjusted")
+      
+      missing_cols <- setdiff(required_cols, names(bars_df));
+      if(length(missing_cols)>0) stop(paste("Missing cols after Yahoo fetch:", paste(missing_cols, collapse=",")))
+      
+      # Clean NAs before inserting (SQLite doesn't handle NA well for numerics sometimes)
+      bars_df_clean <- na.omit(bars_df[, required_cols])
+      
+      if(nrow(bars_df_clean) > 0) {
+        debug_log("Attempting DB insert/replace for %d bars for %s", nrow(bars_df_clean), sym)
+        insert_success <- insert_daily_bars_safe(db, bars_df_clean)
+        if(insert_success) {
+          showNotification(paste("Updated historical data for", sym, "(", nrow(bars_df_clean), "bars)"), type="message", duration=5)
+        } else {
+          showNotification(paste("Failed DB update for", sym), type="warning", duration=8) # Error already logged in helper
+        }
+      } else {
+        showNotification(paste("No valid historical rows fetched/cleaned for", sym), type="warning", duration=8)
+      }
+      
+    }, error = function(e) {
+      showNotification(paste("Error updating", sym, ":", e$message), type="error", duration=10)
+      debug_log("!!! Error update_hist_data for %s: %s", sym, e$message)
+    })
+  })
+  
+  # --- Historical Forecast Server Logic ---
+  # Fetch data for forecast when button is clicked
+  historical_data_reactive_forecast <- eventReactive(input$run_forecast,{
+    sym <- selected_yahoo_symbol(); hist_days <- input$hist_days;
+    start_date <- Sys.Date() - days(hist_days); end_date <- Sys.Date()
+    id <- showNotification(paste("Forecast: Fetching data for", sym, "..."), duration=NULL, closeButton=FALSE);
+    on.exit(removeNotification(id), add = TRUE)
+    
+    tryCatch({
+      debug_log("Forecast: DB fetch %s from %s to %s", sym, start_date, end_date);
+      data_df <- get_daily_bars(db, sym, start_date, end_date);
+      
+      # If insufficient data from DB, try fetching from Yahoo as fallback
+      if(nrow(data_df) < 30) {
+        debug_log("Forecast: DB low data (%d), try Yahoo.", nrow(data_df));
+        showNotification("DB data low, attempting fetch from Yahoo...", duration=3);
+        data_yahoo <- getSymbols(sym, src="yahoo", from=start_date, auto.assign=FALSE);
+        req(inherits(data_yahoo,"xts"), nrow(data_yahoo) > 30);
+        price_col_xts <- if(has.Ad(data_yahoo)) Ad(data_yahoo) else Cl(data_yahoo);
+        # Insert fetched Yahoo data into DB for future use
+        bars_df_yahoo <- data.frame(symbol_yahoo=sym, date=index(data_yahoo), open=Op(data_yahoo), high=Hi(data_yahoo), low=Lo(data_yahoo), close=Cl(data_yahoo), volume=Vo(data_yahoo), adjusted=Ad(data_yahoo), stringsAsFactors=F)
+        names(bars_df_yahoo) <- tolower(names(bars_df_yahoo)); names(bars_df_yahoo)[names(bars_df_yahoo)=="index"] <- "date"
+        insert_daily_bars_safe(db, na.omit(bars_df_yahoo)) # Insert cleaned data
+      } else {
+        debug_log("Forecast: Using %d DB rows.", nrow(data_df));
+        # Use adjusted if available and has non-NA values, else use close
+        price_col_name <- if("adjusted" %in% names(data_df) && any(!is.na(data_df$adjusted))) "adjusted" else "close";
+        price_col_xts <- xts(data_df[[price_col_name]], order.by=data_df$date);
+      }
+      # Ensure no NAs in the price column used for forecasting
+      price_col_xts <- price_col_xts[!is.na(price_col_xts[,1]),];
+      req(nrow(price_col_xts) > 30); # Require minimum points for forecast
+      
+      # Convert to time series object (ts) - assuming daily data, frequency=7 might be reasonable for weekly patterns
+      # Alternatively, could use frequency=365.25 but requires more data. freq=1 if no seasonality assumed.
+      price_ts <- ts(coredata(price_col_xts[,1]), frequency=7); # Try weekly frequency
+      
+      showNotification(paste("Forecast: Using", nrow(price_col_xts), "points."), duration=3);
+      return(list(ts=price_ts, symbol=sym, dates = index(price_col_xts))) # Return ts object and symbol/dates
+      
+    },error=function(e){
+      showNotification(paste("Forecast Data Error:", e$message), duration=10, type="error");
+      debug_log("!!! Forecast data error %s: %s", sym, e$message);
+      return(NULL) # Return NULL on error
+    })
+  })
+  
+  # Run forecast model when data is ready
+  forecast_result_reactive <- reactive({
+    data_list <- historical_data_reactive_forecast();
+    req(data_list, !is.null(data_list$ts)); # Require valid data from previous step
+    ts_data <- data_list$ts; horizon <- input$horizon;
+    id <- showNotification("Fitting forecast model (auto.arima)...", duration=NULL, closeButton=FALSE);
+    on.exit(removeNotification(id), add = TRUE);
+    
+    tryCatch({
+      # Use auto.arima for automatic model selection
+      fit <- auto.arima(ts_data, seasonal=TRUE, stepwise=TRUE, approximation=TRUE, allowdrift=TRUE, allowmean=TRUE);
+      forecast_obj <- forecast(fit, h=horizon);
+      showNotification("Forecast complete.", duration=5);
+      debug_log("Forecast fitted %s. Model: %s", data_list$symbol, forecast_obj$method);
+      return(list(forecast=forecast_obj, fit=fit)) # Return forecast and fitted model
+    },error=function(e){
+      showNotification(paste("Forecast Model Error:", e$message), duration=10, type="error");
+      debug_log("!!! Forecast model error %s: %s", data_list$symbol, e$message);
+      return(NULL) # Return NULL on error
+    })
+  })
+  
+  # --- Forecast Outputs ---
+  output$forecastPlot <- renderPlot({
+    data_list <- historical_data_reactive_forecast(); forecast_list <- forecast_result_reactive();
+    req(data_list, forecast_list); # Require both data and forecast results
+    
+    tryCatch({
+      # Use autoplot for easy ggplot2 visualization of forecast object
+      autoplot(forecast_list$forecast) +
+        ggtitle(paste("Price Forecast:", data_list$symbol)) +
+        xlab("Time") + ylab("Price") +
+        theme_minimal(base_size=14) +
+        labs(caption=paste("Model:", forecast_list$forecast$method)) + # Add model info
+        theme(plot.title = element_text(hjust = 0.5))
+    }, error=function(e){
+      # Fallback plot on error
+      plot(1, type="n", axes=FALSE, xlab="", ylab="");
+      title(main="Forecast Plot Error", col.main="red"); text(1,1,e$message, col="red"); grid();
+      debug_log("!!! Forecast Plot Error: %s", e$message)
+    })
+  })
+  output$forecastPlotTitle <- renderText({
+    data_list <- historical_data_reactive_forecast(); req(data_list);
+    paste("Historical Price & Forecast:", data_list$symbol)
+  })
+  output$forecastSummary <- renderPrint({
+    forecast_list <- forecast_result_reactive(); req(forecast_list);
+    cat("-- ARIMA Model Summary --\n"); print(summary(forecast_list$fit));
+    cat("\n-- Forecast Values (Point Forecast & Confidence Intervals) --\n");
+    # Create a nice dataframe of forecast values
+    forecast_df <- data.frame(
+      PointForecast = forecast_list$forecast$mean,
+      Lo.80 = forecast_list$forecast$lower[, "80%"], Hi.80 = forecast_list$forecast$upper[, "80%"],
+      Lo.95 = forecast_list$forecast$lower[, "95%"], Hi.95 = forecast_list$forecast$upper[, "95%"]
+    )
+    print(forecast_df)
+  })
+  
+  # === Strategy Analysis Logic (Tab 3) ===
+  
+  # --- Reactive for Single Backtest Run ---
+  backtest_run <- eventReactive(input$run_backtest, {
     sym_y <- selected_yahoo_symbol(); start_d <- input$backtest_date_range[1]; end_d <- input$backtest_date_range[2]
     strategy <- input$strategy_select; comm_pct <- input$commission_pct; slip_pct <- input$slippage_pct
     req_vol_confirm <- input$require_volume_confirm; vol_sma_period <- input$volume_sma_n
-    if (start_d >= end_d) { msg <- "Backtest date range invalid."; showNotification(msg, type = "error"); debug_log(msg); return(list(error = msg)) }
-    if (comm_pct < 0 || slip_pct < 0) { msg <- "Costs cannot be negative."; showNotification(msg, type = "error"); debug_log(msg); return(list(error = msg)) }
-
+    
+    # --- Input Validation ---
+    if (start_d >= end_d) { msg <- "Backtest date range invalid (start date must be before end date)."; showNotification(msg, type = "error"); debug_log(msg); return(list(error = msg)) }
+    if (comm_pct < 0 || slip_pct < 0) { msg <- "Commission and slippage costs cannot be negative."; showNotification(msg, type = "error"); debug_log(msg); return(list(error = msg)) }
+    
+    # --- Parameter Collection & Validation ---
     params <- list(require_volume_confirm = req_vol_confirm, volume_sma_n = vol_sma_period)
-    min_data_needed_indicator <- 50
+    min_data_needed_indicator <- 50 # Base requirement, will be increased by strategy
     valid_params <- TRUE; error_msg <- NULL
+    
     tryCatch({
-         if (strategy == "MA Crossover") { params$short_ma <- input$backtest_short_ma; params$long_ma <- input$backtest_long_ma; if(params$short_ma <= 0 || params$long_ma <= 0 || params$short_ma >= params$long_ma) { valid_params <- FALSE; error_msg <- "Invalid MA periods." }; min_data_needed_indicator <- max(min_data_needed_indicator, params$long_ma + 5)
-         } else if (strategy == "RSI Threshold") { params$rsi_period <- input$backtest_rsi_period; params$rsi_oversold <- input$backtest_rsi_oversold; params$rsi_overbought <- input$backtest_rsi_overbought; if(params$rsi_period <= 1 || params$rsi_oversold < 0 || params$rsi_overbought > 100 || params$rsi_oversold >= params$rsi_overbought) { valid_params <- FALSE; error_msg <- "Invalid RSI parameters." }; min_data_needed_indicator <- max(min_data_needed_indicator, params$rsi_period + 20)
-         } else if (strategy == "MACD Crossover") { params$macd_fast = 12; params$macd_slow = 26; params$macd_signal = 9; min_data_needed_indicator <- max(min_data_needed_indicator, 26 + 9 + 10)
-         } else if (strategy == "Bollinger Band Breakout" || strategy == "Bollinger Band Reversion") { params$bb_n <- input$backtest_bb_n; params$bb_sd <- input$backtest_bb_sd; if(params$bb_n <= 1 || params$bb_sd <= 0) { valid_params <- FALSE; error_msg <- "Invalid BB parameters." }; params$bb_strategy_type <- if(strategy == "Bollinger Band Breakout") "Breakout" else "Reversion"; min_data_needed_indicator <- max(min_data_needed_indicator, params$bb_n + 5)
-         } else if (strategy == "ATR Breakout") { params$atr_n <- input$backtest_atr_n; params$atr_multiplier <- input$backtest_atr_multiplier; if(params$atr_n <= 1 || params$atr_multiplier <= 0) { valid_params <- FALSE; error_msg <- "Invalid ATR parameters." }; min_data_needed_indicator <- max(min_data_needed_indicator, params$atr_n + 5)
-         } else { valid_params <- FALSE; error_msg <- "Strategy not implemented." }
-    }, error = function(e) { valid_params <<- FALSE; error_msg <<- paste("Param Read Error:", e$message) })
-
+      if (strategy == "MA Crossover") {
+        params$short_ma <- input$backtest_short_ma; params$long_ma <- input$backtest_long_ma;
+        if(params$short_ma <= 0 || params$long_ma <= 0 || params$short_ma >= params$long_ma) { valid_params <- FALSE; error_msg <- "Invalid MA periods (must be > 0, short < long)." }
+        min_data_needed_indicator <- max(min_data_needed_indicator, params$long_ma + 5) # Need data for longest MA
+      } else if (strategy == "RSI Threshold") {
+        params$rsi_period <- input$backtest_rsi_period; params$rsi_oversold <- input$backtest_rsi_oversold; params$rsi_overbought <- input$backtest_rsi_overbought;
+        if(params$rsi_period <= 1 || params$rsi_oversold < 0 || params$rsi_overbought > 100 || params$rsi_oversold >= params$rsi_overbought) { valid_params <- FALSE; error_msg <- "Invalid RSI parameters (period>1, 0<=OS<OB<=100)." }
+        min_data_needed_indicator <- max(min_data_needed_indicator, params$rsi_period + 20) # Need data for RSI calc + buffer
+      } else if (strategy == "MACD Crossover") {
+        params$macd_fast = 12; params$macd_slow = 26; params$macd_signal = 9; # Fixed standard params
+        min_data_needed_indicator <- max(min_data_needed_indicator, 26 + 9 + 10) # Slow EMA + Signal EMA + buffer
+      } else if (strategy == "Bollinger Band Breakout" || strategy == "Bollinger Band Reversion") {
+        params$bb_n <- input$backtest_bb_n; params$bb_sd <- input$backtest_bb_sd;
+        if(params$bb_n <= 1 || params$bb_sd <= 0) { valid_params <- FALSE; error_msg <- "Invalid BB parameters (n>1, sd>0)." }
+        params$bb_strategy_type <- if(strategy == "Bollinger Band Breakout") "Breakout" else "Reversion";
+        min_data_needed_indicator <- max(min_data_needed_indicator, params$bb_n + 5) # Need data for BB period
+      } else if (strategy == "ATR Breakout") {
+        params$atr_n <- input$backtest_atr_n; params$atr_multiplier <- input$backtest_atr_multiplier;
+        if(params$atr_n <= 1 || params$atr_multiplier <= 0) { valid_params <- FALSE; error_msg <- "Invalid ATR parameters (n>1, mult>0)." }
+        min_data_needed_indicator <- max(min_data_needed_indicator, params$atr_n + 5) # Need data for ATR period
+      } else { valid_params <- FALSE; error_msg <- "Selected strategy is not implemented for backtesting." }
+    }, error = function(e) { valid_params <<- FALSE; error_msg <<- paste("Parameter Read Error:", e$message) })
+    
     if (!valid_params) { showNotification(error_msg, type="error", duration=7); debug_log(error_msg); return(list(error=error_msg)) }
-
+    
+    # --- Data Fetching & Preparation ---
     id <- showNotification(paste("Running", strategy, "for", sym_y, "..."), duration = NULL, closeButton = FALSE); on.exit(removeNotification(id), add = TRUE)
-    buffer_days <- ceiling(min_data_needed_indicator * 1.5) + 10
+    
+    # Fetch extra data before start date for indicator calculation warmup
+    buffer_days <- ceiling(min_data_needed_indicator * 1.5) + 10 # Add buffer
     fetch_start_date <- start_d - days(buffer_days)
     debug_log("Fetching DB: %s from %s to %s (Need ~%d bars before %s)", sym_y, fetch_start_date, end_d, min_data_needed_indicator, start_d)
     daily_data_raw <- get_daily_bars(db, sym_y, fetch_start_date, end_d)
-
-    if (nrow(daily_data_raw) < min_data_needed_indicator) { msg <- paste("Insufficient total DB data (Fetched", nrow(daily_data_raw), ", Need ~", min_data_needed_indicator, "). Update history or change dates."); showNotification(msg, type = "warning", duration = 10); debug_log(msg); return(list(error = msg)) }
+    
+    # Check if enough *total* data was fetched (including warmup)
+    if (nrow(daily_data_raw) < min_data_needed_indicator) {
+      msg <- paste("Insufficient total DB data (Fetched", nrow(daily_data_raw), ", Need ~", min_data_needed_indicator, "). Try updating history or extending date range.");
+      showNotification(msg, type = "warning", duration = 10); debug_log(msg); return(list(error = msg))
+    }
     debug_log("Fetched %d raw rows.", nrow(daily_data_raw))
-
+    
+    # --- Calculate Indicators ---
     debug_log("Calculating indicators...")
     daily_data_indicators <- calculate_indicators(daily_data_raw, debug_log_func = debug_log)
-    if(nrow(daily_data_indicators) < min_data_needed_indicator){ msg <- "Indicator calculation failed or insufficient data post-calc."; showNotification(msg, type = "error", duration=10); debug_log(msg); return(list(error = msg)) }
-
+    # Check if indicator calculation was successful and returned sufficient data
+    if(nrow(daily_data_indicators) < min_data_needed_indicator){
+      msg <- "Indicator calculation failed or resulted in insufficient data post-calculation.";
+      showNotification(msg, type = "error", duration=10); debug_log(msg); return(list(error = msg))
+    }
+    
+    # --- Filter to Backtest Range ---
+    # Filter AFTER indicators are calculated to ensure correct warmup
     daily_data_filtered <- daily_data_indicators %>% filter(date >= start_d & date <= end_d)
-    if (nrow(daily_data_filtered) < 2) { msg <- paste("Not enough data in selected range [", start_d, "-", end_d, "] (Have", nrow(daily_data_filtered),")."); showNotification(msg, type = "warning", duration = 10); debug_log(msg); return(list(error = msg)) }
+    # Need at least 2 rows in the actual backtest period
+    if (nrow(daily_data_filtered) < 2) {
+      msg <- paste("Not enough data in selected range [", start_d, "-", end_d, "] after indicator calculation (Have", nrow(daily_data_filtered),"). Adjust dates.");
+      showNotification(msg, type = "warning", duration = 10); debug_log(msg); return(list(error = msg))
+    }
     debug_log("Filtered data to backtest range. Rows: %d", nrow(daily_data_filtered))
-
-    results <- run_backtest_strategy(daily_data_filtered, strategy_name = strategy, params_list = params,
-                                     commission_pct = comm_pct, slippage_pct = slip_pct,
-                                     debug_log_func = debug_log, verbose_logging = TRUE)
-
-    if (!is.null(results$error)) { showNotification(paste("Backtest Error:", results$error), type = "error", duration = 10); debug_log("Backtest failed for %s (%s): %s", sym_y, strategy, results$error); return(results) }
+    
+    # --- Run Backtest Engine ---
+    results <- run_backtest_strategy(
+      data_with_indicators = daily_data_filtered, # Pass data for the actual backtest period
+      strategy_name = strategy,
+      params_list = params,
+      commission_pct = comm_pct,
+      slippage_pct = slip_pct,
+      debug_log_func = debug_log, # Pass the logging function
+      verbose_logging = TRUE      # Enable detailed logs from backtester
+    )
+    
+    # --- Handle Results ---
+    if (!is.null(results$error)) {
+      showNotification(paste("Backtest Error:", results$error), type = "error", duration = 10);
+      debug_log("Backtest failed for %s (%s): %s", sym_y, strategy, results$error);
+      return(results) # Return the error structure
+    }
     debug_log("Backtest run complete for %s (%s).", sym_y, strategy)
-    return(results)
-})
-
-# --- Backtest UI Outputs (Title, Chart, Metrics) ---
-output$backtestTitle <- renderText({
+    return(results) # Return the successful results list
+  })
+  
+  # --- Backtest UI Outputs (Title, Chart, Metrics) ---
+  output$backtestTitle <- renderText({
     results <- backtest_run(); sym <- selected_yahoo_symbol();
+    # Default title before running
     if (is.null(results)) { return(paste("Strategy Analysis:", sym,"- Ready")) }
+    # Title if there was an error
     if (!is.null(results$error)) { return(paste("Backtest Error:", results$error)) }
+    # Title if results structure is unexpected (shouldn't happen if error handling is good)
     if (is.null(results$strategy) || is.null(results$params)) { return(paste("Backtest Results Incomplete:", sym)) }
-    strategy_title <- tryCatch({ switch(results$strategy, "MA Crossover" = paste("MA Crossover (",results$params$short_ma,"/",results$params$long_ma,")"), "RSI Threshold" = paste("RSI (",results$params$rsi_period,") Thr (",results$params$rsi_oversold,"/",results$params$rsi_overbought,")"), "MACD Crossover" = "MACD Crossover (12/26/9)", "Bollinger Band Breakout" = paste("BB Breakout (", results$params$bb_n, "/", results$params$bb_sd, ")"), "Bollinger Band Reversion" = paste("BB Reversion (", results$params$bb_n, "/", results$params$bb_sd, ")"), "ATR Breakout" = paste("ATR Breakout (", results$params$atr_n, "/", results$params$atr_multiplier, "x)"), results$strategy )}, error = function(e) results$strategy)
-    if (!is.null(results$params$require_volume_confirm) && results$params$require_volume_confirm) { strategy_title <- paste(strategy_title, "+ Vol Confirm (SMA", results$params$volume_sma_n, ")") }
+    
+    # Build title from strategy and params
+    strategy_title <- tryCatch({ switch(results$strategy,
+                                        "MA Crossover" = paste("MA Crossover (",results$params$short_ma,"/",results$params$long_ma,")"),
+                                        "RSI Threshold" = paste("RSI (",results$params$rsi_period,") Thr (",results$params$rsi_oversold,"/",results$params$rsi_overbought,")"),
+                                        "MACD Crossover" = "MACD Crossover (12/26/9)",
+                                        "Bollinger Band Breakout" = paste("BB Breakout (", results$params$bb_n, "/", results$params$bb_sd, ")"),
+                                        "Bollinger Band Reversion" = paste("BB Reversion (", results$params$bb_n, "/", results$params$bb_sd, ")"),
+                                        "ATR Breakout" = paste("ATR Breakout (", results$params$atr_n, "/", results$params$atr_multiplier, "x)"),
+                                        results$strategy # Fallback to raw strategy name
+    )}, error = function(e) results$strategy) # Safer fallback
+    
+    # Append Volume confirmation info if used
+    if (!is.null(results$params$require_volume_confirm) && results$params$require_volume_confirm) {
+      strategy_title <- paste(strategy_title, "+ Vol Confirm (SMA", results$params$volume_sma_n, ")")
+    }
     return(paste(strategy_title, "Backtest:", sym))
-})
-output$backtestChart <- renderPlotly({
-    results <- backtest_run(); req(is.list(results), is.null(results$error), !is.null(results$results)); debug_log("Generating backtest chart with subplots...")
+  })
+  
+  output$backtestChart <- renderPlotly({
+    results <- backtest_run();
+    req(is.list(results), is.null(results$error), !is.null(results$results)); # Require valid results
+    debug_log("Generating backtest chart...")
+    
     tryCatch({
-        df <- results$results; strategy <- results$strategy; params <- results$params
-        p_main <- create_backtest_chart(results)
-        p_indicator <- NULL; p_volume <- NULL
-        indicator_plot_height <- 0.25; volume_plot_height <- 0.15; main_plot_height <- 1.0 - indicator_plot_height - volume_plot_height
-
-        get_col_name <- function(base, period_param) {
-             col <- paste0(base, "_", period_param)
-             if(!col %in% names(df) && period_param == 14) {
-                fallback_col <- paste0(base, "_14")
-                if(fallback_col %in% names(df)) return(fallback_col)
-             }
-             return(col)
-        }
-        if (strategy == "RSI Threshold") { rsi_col <- get_col_name("rsi", params$rsi_period); if (rsi_col %in% names(df)) { p_indicator <- plot_ly(df, x=~date, y=~get(rsi_col), type='scatter',mode='lines',name="RSI") %>% layout(yaxis=list(title="RSI",range=c(0,100))) } }
-        else if (strategy == "MACD Crossover" && all(c("macd_line", "macd_signal", "macd_hist") %in% names(df))) { p_indicator <- plot_ly(df, x=~date) %>% add_lines(y=~macd_line, name="MACD") %>% add_lines(y=~macd_signal, name="Signal") %>% add_bars(y=~macd_hist, name="Hist", marker=list(color=ifelse(df$macd_hist>0, 'rgba(0,128,0,0.6)', 'rgba(255,0,0,0.6)'))) %>% layout(yaxis=list(title="MACD")) }
-        else if (strategy %in% c("Bollinger Band Breakout","Bollinger Band Reversion") && "bb_pctB" %in% names(df)) { p_indicator <- plot_ly(df, x=~date, y=~bb_pctB, type='scatter', mode='lines', name="%B") %>% add_lines(y=1, name="OB", line=list(dash='dash',color='red')) %>% add_lines(y=0, name="OS", line=list(dash='dash',color='green')) %>% layout(yaxis=list(title="%B")) }
-        else if (strategy == "ATR Breakout") { atr_col <- get_col_name("atr", params$atr_n); if (atr_col %in% names(df)) { p_indicator <- plot_ly(df, x=~date, y=~get(atr_col), type='scatter', mode='lines', name="ATR") %>% layout(yaxis=list(title="ATR")) } }
-
-        if(is.null(p_indicator)) { indicator_plot_height <- 0; main_plot_height <- 1.0 - volume_plot_height }
-
-        vol_sma_col <- paste0("vol_sma_", params$volume_sma_n)
-        if ("Volume" %in% names(df) && vol_sma_col %in% names(df)) { p_volume <- plot_ly(df, x=~date) %>% add_bars(y=~Volume, name="Volume", marker=list(color='rgba(100,100,100,0.5)')) %>% add_lines(y=~get(vol_sma_col), name="Vol SMA", line=list(color='red', width=1)) %>% layout(yaxis=list(title="Volume")) }
-        else { volume_plot_height <- 0; main_plot_height <- if(!is.null(p_indicator)) 1.0 - indicator_plot_height else 1.0 }
-
-        plots_to_combine <- Filter(Negate(is.null), list(p_main, p_indicator, p_volume))
-        plot_heights <- c(main_plot_height, indicator_plot_height, volume_plot_height)[!sapply(list(p_main, p_indicator, p_volume), is.null)]
-         if (length(plots_to_combine) > 1) {
-             plot_heights <- plot_heights / sum(plot_heights)
-             fig <- subplot(plots_to_combine, nrows = length(plots_to_combine), shareX = TRUE, titleY = TRUE, heights = plot_heights) %>%
-                    layout(legend = list(orientation = "h", y = -0.1, xanchor = "center", x = 0.5))
-         } else if (length(plots_to_combine) == 1) { fig <- plots_to_combine[[1]]
-         } else { fig <- plot_ly() %>% layout(title = "No plot data available") }
-        if(length(plots_to_combine) > 1 && !is.null(fig)) { fig <- fig %>% style(showlegend = FALSE) %>% layout(showlegend = TRUE) }
-        return(fig)
-    }, error = function(e) { debug_log("!!! Plot Error (backtestChart): %s", e$message); plot_ly() %>% layout(title = "Plot Error") })
-})
-backtest_metrics_reactive <- reactive({
-    results <- backtest_run(); req(is.list(results), is.null(results$error), !is.null(results$metrics)); m <- results$metrics
-    format_metric <- function(v, t="percent", d=2) { if(is.null(v)||is.na(v)||!is.finite(v)) return("N/A"); tryCatch({ if(t=="percent") scales::percent(v, accuracy=1/(10^d)) else if(t=="ratio") sprintf(paste0("%.",d,"f"), v) else if(t=="integer") sprintf("%d", round(v)) else as.character(v)}, error=function(e) "Err") }
-    data.frame( Metric = c("Total Net Return", "Annualized Net Return", "Max Drawdown", "Sharpe Ratio (Ann.)", "Sortino Ratio", "Calmar Ratio", "Number of Trades", "Win Rate", "Avg Win Pct", "Avg Loss Pct"),
-                Value = c( format_metric(m$total_return), format_metric(m$annual_return), format_metric(m$max_drawdown), format_metric(m$sharpe_ratio,"ratio"), format_metric(m$sortino_ratio,"ratio"), format_metric(m$calmar_ratio,"ratio"), format_metric(m$num_trades,"integer"), format_metric(m$win_rate), format_metric(m$avg_win), format_metric(m$avg_loss) ), stringsAsFactors = FALSE ) })
-output$backtestMetricsTable1 <- renderTable({ df <- backtest_metrics_reactive(); req(df); df[1:6, ] }, align="lr", spacing="m", striped=TRUE, hover=TRUE, bordered=TRUE, width="95%")
-output$backtestMetricsTable2 <- renderTable({ df <- backtest_metrics_reactive(); req(df); df[7:10, ] }, align="lr", spacing="m", striped=TRUE, hover=TRUE, bordered=TRUE, width="95%")
-
-# --- Trade Log Table ---
-output$tradeLogTable <- DT::renderDataTable({
-    results <- backtest_run(); req(is.list(results), is.null(results$error), !is.null(results$trade_log)); trade_log_df <- results$trade_log
+      p_main <- create_backtest_chart(results) # Generate the main candlestick chart
+      # Add subplots for indicators or volume if applicable/desired
+      # (Simplified version: only main chart for now)
+      # TODO: Add logic here to create p_indicator, p_volume like original code if subplots are needed
+      #       Requires checking strategy and available columns in results$results
+      
+      # Example (if you want to add subplots back):
+      # p_indicator <- NULL
+      # if(results$strategy == "RSI Threshold" && "rsi_14" %in% names(results$results)) { # Adjust col name if needed
+      #   p_indicator <- plot_ly(results$results, x=~date, y=~rsi_14, type='scatter', mode='lines', name="RSI") %>% layout(yaxis=list(title="RSI"))
+      # }
+      # ... add other indicator plots ...
+      #
+      # if(!is.null(p_indicator)) {
+      #    fig <- subplot(p_main, p_indicator, nrows=2, shareX=TRUE, heights = c(0.7, 0.3))
+      #    return(fig)
+      # } else {
+      return(p_main) # Return just the main plot if no subplots
+      # }
+      
+    }, error = function(e) {
+      debug_log("!!! Plot Error (backtestChart): %s", e$message);
+      plot_ly() %>% layout(title = "Plot Generation Error - Check Logs") # Error placeholder
+    })
+  })
+  
+  # Reactive for formatted metrics table data
+  backtest_metrics_reactive <- reactive({
+    results <- backtest_run();
+    req(is.list(results), is.null(results$error), !is.null(results$metrics));
+    m <- results$metrics # Get metrics list
+    
+    # Helper to format metrics nicely
+    format_metric <- function(v, t="percent", d=2) {
+      if(is.null(v)||is.na(v)||!is.finite(v)) return("N/A");
+      tryCatch({
+        if(t=="percent") scales::percent(v, accuracy=1/(10^d))
+        else if(t=="ratio") sprintf(paste0("%.",d,"f"), v)
+        else if(t=="integer") sprintf("%d", round(v))
+        else as.character(v) # Fallback
+      }, error=function(e) "Err") # Error formatting
+    }
+    
+    # Create dataframe for display
+    data.frame(
+      Metric = c("Total Net Return", "Annualized Net Return", "Max Drawdown",
+                 "Sharpe Ratio (Ann.)", "Sortino Ratio", "Calmar Ratio",
+                 "Number of Trades", "Win Rate", "Avg Win Pct", "Avg Loss Pct"),
+      Value = c( format_metric(m$total_return), format_metric(m$annual_return), format_metric(m$max_drawdown),
+                 format_metric(m$sharpe_ratio,"ratio"), format_metric(m$sortino_ratio,"ratio"), format_metric(m$calmar_ratio,"ratio"),
+                 format_metric(m$num_trades,"integer"), format_metric(m$win_rate),
+                 format_metric(m$avg_win), format_metric(m$avg_loss)
+      ),
+      stringsAsFactors = FALSE
+    )
+  })
+  
+  # Split metrics into two tables for better layout
+  output$backtestMetricsTable1 <- renderTable({
+    df <- backtest_metrics_reactive(); req(df); df[1:6, ] # Top 6 metrics
+  }, align="lr", spacing="m", striped=TRUE, hover=TRUE, bordered=TRUE, width="95%")
+  
+  output$backtestMetricsTable2 <- renderTable({
+    df <- backtest_metrics_reactive(); req(df); df[7:10, ] # Bottom 4 metrics
+  }, align="lr", spacing="m", striped=TRUE, hover=TRUE, bordered=TRUE, width="95%")
+  
+  # --- Trade Log Table ---
+  output$tradeLogTable <- DT::renderDataTable({
+    results <- backtest_run();
+    req(is.list(results), is.null(results$error), !is.null(results$trade_log)); # Require valid trade log
+    trade_log_df <- results$trade_log
+    
     if(nrow(trade_log_df) > 0) {
-         trade_log_df_display <- trade_log_df %>%
-           mutate(
-               across(where(is.numeric), \(x) round(x, 4)),
-               across(ends_with("pct"), \(x) scales::percent(x, accuracy=0.01))
-           ) %>%
-           select(`Entry Date`=entry_date, `Exit Date`=exit_date, Type=position_type, `Entry Price`=entry_price, `Exit Price`=exit_price, `Gross P&L`=pnl_gross_pct, `Net P&L`=pnl_net_pct)
-         DT::datatable(trade_log_df_display, rownames=FALSE, options=list(pageLength=10, lengthMenu=c(10,25,50), scrollX=TRUE, order=list(list(1,'asc'))), class='cell-border stripe hover')
-    } else { DT::datatable(data.frame(Message="No trades executed."), rownames=FALSE, options=list(dom='t')) } })
-
-
-# === STAGE 3: Parameter Optimization Logic ===
-
-optimization_results_data <- reactiveVal(NULL)
-output$optimizationWarningUI <- renderUI({
+      # Format the trade log for display
+      trade_log_df_display <- trade_log_df %>%
+        mutate(
+          # Round numerics, format percentages
+          across(where(is.numeric) & !ends_with("pct"), \(x) round(x, 4)),
+          across(ends_with("pct"), \(x) scales::percent(x, accuracy=0.01))
+        ) %>%
+        # Select and rename columns for display
+        select(`Entry Date`=entry_date, `Exit Date`=exit_date, Type=position_type,
+               `Entry Price`=entry_price, `Exit Price`=exit_price,
+               `Gross P&L`=pnl_gross_pct, `Net P&L`=pnl_net_pct)
+      
+      DT::datatable(trade_log_df_display, rownames=FALSE,
+                    options=list(pageLength=10, lengthMenu=c(10,25,50), scrollX=TRUE, order=list(list(1,'asc'))), # Order by exit date
+                    class='cell-border stripe hover')
+    } else {
+      # Display message if no trades
+      DT::datatable(data.frame(Message="No trades executed during this period."), rownames=FALSE, options=list(dom='t')) # 't' shows only table
+    }
+  })
+  
+  
+  # === STAGE 3: Parameter Optimization Logic ===
+  
+  optimization_results_data <- reactiveVal(NULL) # Stores the dataframe of optimization results
+  
+  # Show warning if optimization isn't available for the selected strategy
+  output$optimizationWarningUI <- renderUI({
     strategy <- input$strategy_select
     optimizable_strategies <- c("MA Crossover", "RSI Threshold", "Bollinger Band Breakout", "Bollinger Band Reversion", "ATR Breakout")
     if (!strategy %in% optimizable_strategies) {
-        p(em(paste("Optimization is not currently configured for the", strategy, "strategy.")), style = "color:orange;")
-    } else { NULL }
-})
-
-observeEvent(input$optimize_params, {
-    strategy <- input$strategy_select; sym_y <- selected_yahoo_symbol(); start_d <- input$backtest_date_range[1]; end_d <- input$backtest_date_range[2]; comm_pct <- input$commission_pct; slip_pct <- input$slippage_pct; req_vol_confirm <- input$require_volume_confirm; vol_sma_period <- input$volume_sma_n
+      p(em(paste("Optimization is not currently configured for the", strategy, "strategy.")), style = "color:orange;")
+    } else { NULL } # No warning if optimizable
+  })
+  
+  # Run optimization when button is clicked
+  observeEvent(input$optimize_params, {
+    strategy <- input$strategy_select; sym_y <- selected_yahoo_symbol(); start_d <- input$backtest_date_range[1]; end_d <- input$backtest_date_range[2];
+    comm_pct <- input$commission_pct; slip_pct <- input$slippage_pct;
+    req_vol_confirm <- input$require_volume_confirm; vol_sma_period <- input$volume_sma_n
+    
+    # --- Define Parameter Grids ---
     param_grid <- NULL; param_names_actual <- character(0)
-    if (strategy == "MA Crossover") { short_mas <- seq(10, 60, by = 10); long_mas <- seq(80, 200, by = 20); param_grid <- expand.grid(short_ma = short_mas, long_ma = long_mas); param_grid <- param_grid %>% filter(short_ma < long_ma)
-    } else if (strategy == "RSI Threshold") { rsi_periods <- c(10, 14, 21); rsi_oversolds <- seq(20, 40, by = 5); rsi_overboughts <- seq(60, 80, by = 5); param_grid <- expand.grid(rsi_period = rsi_periods, rsi_oversold = rsi_oversolds, rsi_overbought = rsi_overboughts); param_grid <- param_grid %>% filter(rsi_oversold < rsi_overbought)
-    } else if (strategy %in% c("Bollinger Band Breakout", "Bollinger Band Reversion")) { bb_ns <- seq(15, 30, by = 5); bb_sds <- seq(1.5, 2.5, by = 0.5); param_grid <- expand.grid(bb_n = bb_ns, bb_sd = bb_sds); param_grid$bb_strategy_type <- if(strategy == "Bollinger Band Breakout") "Breakout" else "Reversion"
-    } else if (strategy == "ATR Breakout") { atr_ns <- seq(10, 20, by = 2); atr_multipliers <- seq(1.5, 3.0, by = 0.5); param_grid <- expand.grid(atr_n = atr_ns, atr_multiplier = atr_multipliers)
-    } else { showNotification(paste("Optimization not configured for strategy:", strategy), type="warning"); optimization_results_data(NULL); return() }
-    if (is.null(param_grid) || nrow(param_grid) == 0) { showNotification("No valid parameter combinations generated.", type="warning"); optimization_results_data(NULL); return() }
-    param_names_actual <- names(param_grid); num_combinations <- nrow(param_grid); debug_log("Starting optimization for %s: %d combinations. Params: %s", strategy, num_combinations, paste(param_names_actual, collapse=", "))
-    max_lookback_needed <- 300; buffer_days_opt <- ceiling(max_lookback_needed * 1.5) + 10; fetch_start_date_opt <- start_d - days(buffer_days_opt); debug_log("Optimization: Fetching DB data from %s to %s", fetch_start_date_opt, end_d); daily_data_raw_opt <- get_daily_bars(db, sym_y, fetch_start_date_opt, end_d)
-    if (nrow(daily_data_raw_opt) < max_lookback_needed) { msg <- paste("Insufficient total DB data for optimization buffer (Fetched", nrow(daily_data_raw_opt), ", Need ~", max_lookback_needed, ")."); showNotification(msg, type="error", duration=10); debug_log(msg); optimization_results_data(NULL); return() }
-    debug_log("Optimization: Raw data fetched (%d rows).", nrow(daily_data_raw_opt))
-
-    results_list <- list()
+    tryCatch({
+      if (strategy == "MA Crossover") {
+        short_mas <- seq(10, 60, by = 10); long_mas <- seq(80, 200, by = 20);
+        param_grid <- expand.grid(short_ma = short_mas, long_ma = long_mas);
+        param_grid <- param_grid %>% filter(short_ma < long_ma) # Ensure short < long
+      } else if (strategy == "RSI Threshold") {
+        rsi_periods <- c(10, 14, 21); rsi_oversolds <- seq(20, 40, by = 5); rsi_overboughts <- seq(60, 80, by = 5);
+        param_grid <- expand.grid(rsi_period = rsi_periods, rsi_oversold = rsi_oversolds, rsi_overbought = rsi_overboughts);
+        param_grid <- param_grid %>% filter(rsi_oversold < rsi_overbought) # Ensure OS < OB
+      } else if (strategy %in% c("Bollinger Band Breakout", "Bollinger Band Reversion")) {
+        bb_ns <- seq(15, 30, by = 5); bb_sds <- seq(1.5, 2.5, by = 0.5);
+        param_grid <- expand.grid(bb_n = bb_ns, bb_sd = bb_sds);
+        param_grid$bb_strategy_type <- if(strategy == "Bollinger Band Breakout") "Breakout" else "Reversion" # Add type
+      } else if (strategy == "ATR Breakout") {
+        atr_ns <- seq(10, 20, by = 2); atr_multipliers <- seq(1.5, 3.0, by = 0.5);
+        param_grid <- expand.grid(atr_n = atr_ns, atr_multiplier = atr_multipliers)
+      } else {
+        showNotification(paste("Optimization not configured for strategy:", strategy), type="warning");
+        optimization_results_data(NULL); return() # Exit observer
+      }
+    }, error = function(e) {
+      showNotification(paste("Error generating param grid:", e$message), type="error");
+      debug_log("!!! Param grid generation error: %s", e$message);
+      optimization_results_data(NULL); return()
+    })
+    
+    if (is.null(param_grid) || nrow(param_grid) == 0) {
+      showNotification("No valid parameter combinations generated for optimization.", type="warning");
+      optimization_results_data(NULL); return()
+    }
+    param_names_actual <- names(param_grid); num_combinations <- nrow(param_grid);
+    debug_log("Starting optimization for %s: %d combinations. Params: %s", strategy, num_combinations, paste(param_names_actual, collapse=", "))
+    
+    # --- Data Fetching for Optimization (Fetch ONCE with max lookback) ---
+    # Determine max lookback needed across all possible param combinations (estimate high)
+    max_lookback_needed <- 300; # Conservative estimate for common indicators
+    buffer_days_opt <- ceiling(max_lookback_needed * 1.5) + 10;
+    fetch_start_date_opt <- start_d - days(buffer_days_opt);
+    debug_log("Optimization: Fetching DB data from %s to %s", fetch_start_date_opt, end_d);
+    daily_data_raw_opt <- get_daily_bars(db, sym_y, fetch_start_date_opt, end_d)
+    
+    # Check if enough data fetched for the longest possible lookback
+    if (nrow(daily_data_raw_opt) < max_lookback_needed) {
+      msg <- paste("Insufficient total DB data for optimization buffer (Fetched", nrow(daily_data_raw_opt), ", Need ~", max_lookback_needed, "). Update history or change dates.");
+      showNotification(msg, type="error", duration=10); debug_log(msg); optimization_results_data(NULL); return()
+    }
+    debug_log("Optimization: Raw data fetched (%d rows). Calculating indicators ONCE.", nrow(daily_data_raw_opt))
+    
+    # --- Calculate Indicators ONCE for all Optimization Runs ---
+    daily_data_indicators_opt <- calculate_indicators(daily_data_raw_opt, debug_log_func = debug_log)
+    if(nrow(daily_data_indicators_opt) < max_lookback_needed){
+      msg <- "Indicator calculation failed for optimization data or resulted in insufficient rows.";
+      showNotification(msg, type="error", duration=10); debug_log(msg); optimization_results_data(NULL); return()
+    }
+    # Filter indicator data to the actual backtest period ONCE
+    daily_data_filtered_opt <- daily_data_indicators_opt %>% filter(date >= start_d & date <= end_d)
+    if (nrow(daily_data_filtered_opt) < 2) {
+      msg <- paste("Not enough data in selected range [", start_d, "-", end_d, "] for optimization after indicator calculation.");
+      showNotification(msg, type = "warning", duration = 10); debug_log(msg); optimization_results_data(NULL); return()
+    }
+    debug_log("Optimization: Data prepared (%d rows in test range). Starting loops.", nrow(daily_data_filtered_opt))
+    
+    
+    # --- Loop Through Parameter Combinations ---
+    results_list <- list() # Store results for each run
     progress_msg <- paste("Optimizing", strategy)
+    
     withProgress(message = progress_msg, value = 0, {
-        for (i in 1:num_combinations) {
-            incProgress(1/num_combinations, detail = paste("Run", i, "of", num_combinations))
-            current_params_row <- param_grid[i, , drop = FALSE]
-            params_list_opt <- as.list(current_params_row)
-            params_list_opt$require_volume_confirm <- req_vol_confirm
-            params_list_opt$volume_sma_n <- vol_sma_period
-
-            backtest_res <- run_backtest_strategy(
-                data_with_indicators = daily_data_raw_opt,
-                strategy_name = strategy,
-                params_list = params_list_opt,
-                commission_pct = comm_pct,
-                slippage_pct = slip_pct,
-                debug_log_func = NULL,
-                verbose_logging = FALSE
-            )
-
-            params_part <- params_list_opt[setdiff(param_names_actual, "bb_strategy_type")]
-            if (!is.null(backtest_res) && is.null(backtest_res$error)) {
-                metrics <- backtest_res$metrics
-                metrics_part <- list( SharpeRatio = metrics$sharpe_ratio, TotalReturn = metrics$total_return, MaxDrawdown = metrics$max_drawdown, NumTrades = metrics$num_trades, WinRate = metrics$win_rate )
-                results_list[[i]] <- c(params_part, metrics_part)
-            } else {
-                metrics_part_na <- list( SharpeRatio = NA_real_, TotalReturn = NA_real_, MaxDrawdown = NA_real_, NumTrades = NA_integer_, WinRate = NA_real_ )
-                results_list[[i]] <- c(params_part, metrics_part_na)
-                # error_detail <- if(!is.null(backtest_res$error)) backtest_res$error else "Unknown backtest error"
-                # message(sprintf("Opt run %d failed (%s): %s", i, paste(names(params_list_opt), params_list_opt, collapse=", "), error_detail))
-            }
-            if (isTRUE(getOption("shiny.stopped"))) { stop("Optimization interrupted by user.") }
-        } # End for loop
-    }) # End withProgress
-
-     if (length(results_list) > 0) {
-         final_results_df <- tryCatch({
-              dplyr::bind_rows(results_list) %>% dplyr::arrange(desc(SharpeRatio))
-         }, error = function(e) {
-              debug_log("!!! Error binding optimization results: %s", e$message)
-              tryCatch({ as.data.frame(do.call(rbind, results_list)) }, error = function(e2) NULL)
-         })
-        if(!is.null(final_results_df) && nrow(final_results_df) > 0) {
-             optimization_results_data(final_results_df)
-             showNotification(paste("Optimization complete:", num_combinations, "combinations tested."), type = "message")
-             debug_log("Optimization finished. Stored %d results. Top result SR: %.3f", nrow(final_results_df), ifelse(nrow(final_results_df)>0 && !is.na(final_results_df$SharpeRatio[1]), final_results_df$SharpeRatio[1], NA))
+      for (i in 1:num_combinations) {
+        incProgress(1/num_combinations, detail = paste("Run", i, "of", num_combinations))
+        
+        current_params_row <- param_grid[i, , drop = FALSE]
+        params_list_opt <- as.list(current_params_row)
+        # Add common params (vol confirm, costs handled by backtester)
+        params_list_opt$require_volume_confirm <- req_vol_confirm
+        params_list_opt$volume_sma_n <- vol_sma_period
+        
+        # Run backtest with current parameter set using the pre-calculated, filtered data
+        backtest_res <- run_backtest_strategy(
+          data_with_indicators = daily_data_filtered_opt, # Use the filtered data
+          strategy_name = strategy,
+          params_list = params_list_opt,
+          commission_pct = comm_pct,
+          slippage_pct = slip_pct,
+          debug_log_func = NULL, # Disable detailed logging inside loop
+          verbose_logging = FALSE
+        )
+        
+        # Extract parameters and key metrics
+        # Exclude bb_strategy_type from the parameter list to avoid issues with binding rows
+        params_part <- params_list_opt[setdiff(param_names_actual, "bb_strategy_type")]
+        if (!is.null(backtest_res) && is.null(backtest_res$error)) {
+          metrics <- backtest_res$metrics
+          metrics_part <- list(
+            SharpeRatio = metrics$sharpe_ratio, TotalReturn = metrics$total_return,
+            MaxDrawdown = metrics$max_drawdown, NumTrades = metrics$num_trades,
+            WinRate = metrics$win_rate
+          )
+          results_list[[i]] <- c(params_part, metrics_part)
         } else {
-             optimization_results_data(NULL); showNotification("Optimization completed, but failed to process results.", type = "warning"); debug_log("Optimization failed during result processing.")
+          # Store NA if backtest failed for this param set
+          metrics_part_na <- list( SharpeRatio = NA_real_, TotalReturn = NA_real_, MaxDrawdown = NA_real_, NumTrades = NA_integer_, WinRate = NA_real_ )
+          results_list[[i]] <- c(params_part, metrics_part_na)
+          # Optionally log the failure for this specific param set
+          # error_detail <- if(!is.null(backtest_res$error)) backtest_res$error else "Unknown backtest error"
+          # message(sprintf("Opt run %d failed (%s): %s", i, paste(names(params_list_opt), params_list_opt, collapse=", "), error_detail))
         }
-    } else { optimization_results_data(NULL); showNotification("Optimization finished, but no results were generated.", type = "warning"); debug_log("Optimization finished with no results.") }
-
-}) # End observeEvent(input$optimize_params)
-
-# --- Render Optimization Results Table ---
-output$optimizationResultsTable <- DT::renderDataTable({
-    results_df <- optimization_results_data(); req(results_df, nrow(results_df) > 0)
+        
+        # Check if Shiny session has stopped (e.g., user closed window)
+        if (isTRUE(getOption("shiny.stopped"))) {
+          stop("Optimization interrupted by user.")
+        }
+      } # End for loop
+    }) # End withProgress
+    
+    # --- Process and Store Optimization Results ---
+    if (length(results_list) > 0) {
+      final_results_df <- tryCatch({
+        dplyr::bind_rows(results_list) %>% # Combine list into dataframe
+          dplyr::arrange(desc(SharpeRatio)) # Rank by Sharpe Ratio (descending)
+      }, error = function(e) {
+        debug_log("!!! Error binding optimization results: %s", e$message)
+        # Fallback attempt if bind_rows fails (e.g., inconsistent types)
+        tryCatch({ as.data.frame(do.call(rbind, results_list)) }, error = function(e2) NULL)
+      })
+      
+      if(!is.null(final_results_df) && nrow(final_results_df) > 0) {
+        optimization_results_data(final_results_df) # Update the reactiveVal
+        showNotification(paste("Optimization complete:", num_combinations, "combinations tested."), type = "message")
+        debug_log("Optimization finished. Stored %d results. Top result SR: %.3f",
+                  nrow(final_results_df),
+                  ifelse(nrow(final_results_df)>0 && !is.na(final_results_df$SharpeRatio[1]), final_results_df$SharpeRatio[1], NA))
+      } else {
+        optimization_results_data(NULL); # Clear previous results if binding failed
+        showNotification("Optimization completed, but failed to process results.", type = "warning");
+        debug_log("Optimization failed during result processing.")
+      }
+    } else {
+      optimization_results_data(NULL); # Clear previous results
+      showNotification("Optimization finished, but no results were generated.", type = "warning");
+      debug_log("Optimization finished with no results.")
+    }
+    
+  }) # End observeEvent(input$optimize_params)
+  
+  # --- Render Optimization Results Table ---
+  output$optimizationResultsTable <- DT::renderDataTable({
+    results_df <- optimization_results_data();
+    req(results_df, nrow(results_df) > 0) # Require valid results data
+    
+    # Identify metric columns for formatting
     metric_cols <- c("SharpeRatio", "TotalReturn", "MaxDrawdown", "WinRate")
     cols_exist <- metric_cols %in% names(results_df)
-    if(!all(cols_exist)) { debug_log("Warning: Missing expected metric columns for formatting: %s", paste(metric_cols[!cols_exist], collapse=", ")); return(DT::datatable(data.frame(Error = "Result columns missing - check logs"), rownames=FALSE)) }
-
+    if(!all(cols_exist)) {
+      # Handle case where expected columns might be missing
+      debug_log("Warning: Missing expected metric columns for formatting: %s", paste(metric_cols[!cols_exist], collapse=", "));
+      return(DT::datatable(data.frame(Error = "Result columns missing - check logs"), rownames=FALSE))
+    }
+    
+    # Format the results for display
     results_df_display <- results_df %>%
       mutate(
         SharpeRatio = round(SharpeRatio, 3),
@@ -930,21 +1942,26 @@ output$optimizationResultsTable <- DT::renderDataTable({
         MaxDrawdown = scales::percent(MaxDrawdown, accuracy = 0.01),
         WinRate = scales::percent(WinRate, accuracy = 0.1)
       ) %>%
+      # Reorder columns: Parameters first, then metrics
       select(any_of(setdiff(names(results_df), metric_cols)), all_of(metric_cols))
-
+    
+    # Find the column index for SharpeRatio for default sorting (0-based for JS)
     sharpe_idx <- which(tolower(names(results_df_display)) == "sharperatio") - 1
-    if(length(sharpe_idx) == 0) sharpe_idx <- 0
-
-    DT::datatable( results_df_display, rownames = FALSE, filter = 'top',
-        options = list( pageLength = 15, lengthMenu = c(10, 15, 25, 50, 100), scrollX = TRUE, order = list(list(sharpe_idx, 'desc')) ),
-        class = 'cell-border stripe hover compact'
+    if(length(sharpe_idx) == 0) sharpe_idx <- 0 # Default to first column if not found
+    
+    # Create the DataTable
+    DT::datatable( results_df_display, rownames = FALSE, filter = 'top', # Add column filters
+                   options = list(
+                     pageLength = 15, lengthMenu = c(10, 15, 25, 50, 100),
+                     scrollX = TRUE, # Enable horizontal scrolling
+                     order = list(list(sharpe_idx, 'desc')) # Default sort by Sharpe desc
+                   ),
+                   class = 'cell-border stripe hover compact' # Apply styling classes
     )
-})
-# === END STAGE 3 ===
-```
-
-} \# End Server Logic
+  })
+  # === END STAGE 3 ===
+  
+} # End Server Logic
 
 # --- Run the Application ---
-
 shinyApp(ui = ui, server = server)
