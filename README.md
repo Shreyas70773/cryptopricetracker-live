@@ -56,9 +56,24 @@ Buy/Sell/Exit markers on strategy output
 
 Overlay of indicators like MA and BBands
 
-❌ No Data Export: Currently does not support exporting to CSV/JSON.
+📸 Screenshots
 
-❌ No External Alerts: Notifications are limited to in-app status updates.
+<img width="1900" height="881" alt="{5FEE943B-17AA-4A1E-85D3-13B7CC8EAA00}" src="https://github.com/user-attachments/assets/649f3ba3-6abe-4552-8d06-d35d47354513" />
+
+
+<img width="1897" height="1023" alt="{199E22AE-0FC2-4911-8ED2-4B941AAB3595}" src="https://github.com/user-attachments/assets/d835558f-4cee-4dd1-9372-44295e331bb0" />
+
+<img width="1896" height="945" alt="{6B022E07-0FD8-4DEB-A1B1-0D18F3D5805C}" src="https://github.com/user-attachments/assets/24d5a2ab-b988-494d-8bbe-1fa048b89c3c" />
+
+<img width="1907" height="935" alt="{806A806E-CDA1-4901-808C-5925EBC6F762}" src="https://github.com/user-attachments/assets/91ee9b28-ba8f-4cb6-b673-05af77a471e6" />
+
+<img width="1877" height="952" alt="image" src="https://github.com/user-attachments/assets/4a9b9163-9eea-48d5-b8f7-259cd97d9a6d" />
+
+<img width="1876" height="910" alt="image" src="https://github.com/user-attachments/assets/fce5a1bf-dd14-4226-a62a-565e5ec9afa6" />
+
+<img width="1417" height="496" alt="{85ECE6D9-9F3C-4954-A309-2F54EF805331}" src="https://github.com/user-attachments/assets/95da1bef-6321-4ff2-ba91-1f439f8fe499" />
+
+
 
 🧱 Tech Stack
 Language: R
@@ -185,22 +200,6 @@ Deployment guide for shinyapps.io or Shiny Server
 
 Portfolio-level backtesting & rebalancing
 
-📸 Screenshots
-
-<img width="1900" height="881" alt="{5FEE943B-17AA-4A1E-85D3-13B7CC8EAA00}" src="https://github.com/user-attachments/assets/649f3ba3-6abe-4552-8d06-d35d47354513" />
-
-
-<img width="1897" height="1023" alt="{199E22AE-0FC2-4911-8ED2-4B941AAB3595}" src="https://github.com/user-attachments/assets/d835558f-4cee-4dd1-9372-44295e331bb0" />
-
-<img width="1896" height="945" alt="{6B022E07-0FD8-4DEB-A1B1-0D18F3D5805C}" src="https://github.com/user-attachments/assets/24d5a2ab-b988-494d-8bbe-1fa048b89c3c" />
-
-<img width="1907" height="935" alt="{806A806E-CDA1-4901-808C-5925EBC6F762}" src="https://github.com/user-attachments/assets/91ee9b28-ba8f-4cb6-b673-05af77a471e6" />
-
-<img width="1877" height="952" alt="image" src="https://github.com/user-attachments/assets/4a9b9163-9eea-48d5-b8f7-259cd97d9a6d" />
-
-<img width="1876" height="910" alt="image" src="https://github.com/user-attachments/assets/fce5a1bf-dd14-4226-a62a-565e5ec9afa6" />
-
-<img width="1417" height="496" alt="{85ECE6D9-9F3C-4954-A309-2F54EF805331}" src="https://github.com/user-attachments/assets/95da1bef-6321-4ff2-ba91-1f439f8fe499" />
 
 csharp
 Copy
