@@ -4,6 +4,7 @@ An all-in-one interactive R Shiny dashboard for cryptocurrency analysis — tail
 ⚡ Live Price Tracking
 
 📈 Statistical Forecasting
+
 🧠 Backtesting Engine with Strategy Optimization
 
 All wrapped in a browser-accessible Shiny app.
