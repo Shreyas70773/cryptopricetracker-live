@@ -10,6 +10,7 @@ An all-in-one interactive R Shiny dashboard for cryptocurrency analysis — tail
 All wrapped in a browser-accessible Shiny app.
 
 🔍 Key Features
+
 ✅ Real-Time Price Tracking
 Fetches price data from Binance API every 30 seconds
 Displays updated prices using line charts and text panels
@@ -118,10 +119,15 @@ crypto-dashboard/
 ├── crypto_data.sqlite  # Local SQLite DB (auto-generated)
 ```
 🧩 Known Limitations
+
 📉 Risk of overfitting when optimizing strategy parameters
+
 🌐 Dependent on Binance and Yahoo Finance APIs
+
 🕒 Updates every 30s — not real-time streaming
+
 🚧 Single-threaded: heavy operations may freeze UI
+
 ⏱️ No intraday backtesting yet (daily OHLCV only)
 
 🗺️ Roadmap
