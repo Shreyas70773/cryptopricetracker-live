@@ -240,37 +240,49 @@ Although this is currently for local use, it can be deployed via:
 
 
 ❓ FAQ
+
 🔧 Do I need Binance API keys?
+
 No. It uses public endpoints — no authentication is required.
 
 🔒 Licensing
+
 This project is closed-source and not licensed for distribution.
 
 💾 Where is the data stored?
+
 All fetched data (live & historical) is stored locally in a file called crypto_data.sqlite.
 
 🕒 How frequently is price data updated?
+
 Every 30 seconds, but you can change this via the LIVE_REFRESH_INTERVAL constant.
 
 📉 Can I add my own strategy?
+
 Not yet — but it's on the roadmap. Future versions may allow user-defined logic or scripting via UI/code modules.
 
 🧪 Is this suitable for real trading?
+
 It’s designed for analysis and simulation only. While the calculations simulate real-world conditions (e.g., slippage, lag), you should not use it to execute trades directly.
 
 🧠 What data frequency is used?
+
 Only daily OHLCV data is used for forecasting and backtesting.
 
 🔁 Will intraday support be added?
+
 Yes, it's on the roadmap to support 1h and 4h candles in future updates.
 
 🚀 How do I deploy this online?
+
 Deployment instructions (via shinyapps.io or Shiny Server) will be added in a future version.
 
 📬 Can I contribute?
+
 The project is currently closed-source, but feel free to reach out for collaboration or testing opportunities.
 
 📬 Contact
+
 Have questions or want a demo? Reach out at:
 
 📧 shreyassunil010@gmail.com
