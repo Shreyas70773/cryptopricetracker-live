@@ -170,6 +170,7 @@ Pro Tip: Add write.csv() or ggsave() in app.R to automate report saving.
 
 🔌 Extensibility & Customization
 This project is structured to support future development and advanced use:
+
 ➕ Add New Strategies
 Implement new logic in the run_strategy() block
 Add indicator calculations in the indicator engine
@@ -255,7 +256,9 @@ The project is currently closed-source, but feel free to reach out for collabora
 
 📬 Contact
 Have questions or want a demo? Reach out at:
+
 📧 shreyassunil010@gmail.com
+
 🌐 LinkedIn Profile : https://www.linkedin.com/in/shreyas-sunil-2a44b2321/
 
 
