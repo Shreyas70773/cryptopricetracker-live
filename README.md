@@ -1,60 +1,136 @@
 📊 Crypto Analyzer Dashboard (R Shiny)
-An interactive R Shiny dashboard for cryptocurrency analysis, featuring:
+An all-in-one interactive R Shiny dashboard for cryptocurrency analysis — tailored for traders, analysts, and researchers. It offers:
 
-⚡ Near real-time price tracking
+⚡ Live Price Tracking
 
-📈 Statistical forecasting
+📈 Statistical Forecasting
+🧠 Backtesting Engine with Strategy Optimization
 
-🧠 Comprehensive backtesting engine with multiple strategies
+All wrapped in a browser-accessible Shiny app.
 
-This tool integrates essential crypto analytics into a single, browser-accessible app—ideal for traders, analysts, and researchers.
+🔍 Key Features
+✅ Real-Time Price Tracking
+Fetches price data from Binance API every 30 seconds
+Displays updated prices using line charts and text panels
+Auto-saves live ticks to a local SQLite database
 
-🔍 Features
-✅ Live Price Tracking:
+✅ Multi-Crypto Support
+Bitcoin, Ethereum, Solana, and more
+Easily extendable to additional assets
 
-Fetches data from Binance API every 30 seconds.
-
-Displays updated prices via text and line charts.
-
-✅ Multi-Crypto Support:
-
-Supports popular assets including Bitcoin, Ethereum, Solana, and more.
-
-✅ Backtesting Engine:
-
-Daily timeframe backtests for:
-
+✅ Backtesting Engine
+Supports the following strategies:
 Moving Average Crossover
-
 RSI Threshold
-
 MACD Crossover
-
 Bollinger Bands (Breakout & Mean Reversion)
-
 ATR Breakout
 
-Features:
-
-Parameter optimization
-
+Includes:
 Volume confirmation filter
+Parameter grid search optimization
+Configurable slippage and commission
 
-Configurable slippage & commission
+✅ Forecasting
+Uses auto.arima() from the forecast package
+Projects future prices with confidence intervals
+Configurable training window and forecast horizon
 
-✅ Forecasting:
+✅ Interactive Visualizations
+Candlestick charts (Plotly)
+Buy/Sell markers overlaid on strategy outputs
+Performance metrics & trade logs
 
-Uses auto.arima from the forecast package
+🧱 Tech Stack
 
-Fits best ARIMA model for historical data and projects future prices
+| Category       | Libraries                                    |
+| -------------- | -------------------------------------------- |
+| Language       | R                                            |
+| UI & Logic     | `shiny`, `shinycssloaders`, `DT`             |
+| Charts         | `plotly`, `ggplot2`                          |
+| Time Series    | `forecast`, `quantmod`, `TTR`, `xts`         |
+| Data Wrangling | `dplyr`, `lubridate`, `PerformanceAnalytics` |
+| API & Storage  | `httr2`, `jsonlite`, `RSQLite`, `DBI`        |
 
-✅ Advanced Visualization:
 
-Candlestick charts with Plotly
+Database: crypto_data.sqlite (auto-generated for live + historical data)
 
-Buy/Sell/Exit markers on strategy output
+🚀 Installation
+1. Install R & RStudio
+https://cran.r-project.org/
+https://posit.co/download/rstudio-desktop/
 
-Overlay of indicators like MA and BBands
+2. Clone Repository and Open app.R
+```
+git clone https://github.com/shreyas70773/cryptopricetracker-live.git
+```
+4. Install Dependencies in R Console
+```
+install.packages(c(
+  "shiny", "quantmod", "forecast", "ggplot2", "dplyr", "lubridate", "xts",
+  "httr2", "jsonlite", "RSQLite", "DBI", "TTR", "plotly", "PerformanceAnalytics",
+  "scales", "DT", "shinycssloaders"
+))
+```
+5. Launch the App
+```
+shiny::runApp("path/to/your/app_directory")
+```
+
+Compatible with Windows, macOS, and Linux.
+
+🌐 Usage Guide
+🖥️ In Your Browser:
+Choose a Cryptocurrency
+View Live Prices on the "Live View" tab
+Generate Forecasts in the "Forecast" tab
+Run Backtests under "Strategy Analysis"
+
+✅ Inputs:
+Strategy & parameters (e.g., MA lengths, RSI thresholds)
+
+Crypto asset
+Date range
+Commission & slippage
+
+📊 Outputs:
+Live price charts
+ARIMA forecasts
+
+Backtest results:
+Candlestick with buy/sell markers
+Trade logs
+Performance metrics
+
+⚙️ Configuration
+Setting	Location	Description
+LIVE_REFRESH_INTERVAL	app.R	Live update frequency (default: 30s)
+DEBUG_MODE	app.R	Enables console logging and debug UI
+DB_FILE	app.R	SQLite file path
+
+✅ No API keys required — relies on public endpoints from Binance and Yahoo Finance.
+
+📁 Project Structure
+```
+crypto-dashboard/
+├── app.R               # Main Shiny app file (UI + Server)
+├── crypto_data.sqlite  # Local SQLite DB (auto-generated)
+```
+🧩 Known Limitations
+📉 Risk of overfitting when optimizing strategy parameters
+🌐 Dependent on Binance and Yahoo Finance APIs
+🕒 Updates every 30s — not real-time streaming
+🚧 Single-threaded: heavy operations may freeze UI
+⏱️ No intraday backtesting yet (daily OHLCV only)
+
+🗺️ Roadmap
+ Add advanced indicators (Ichimoku, SuperTrend)
+ Enable custom strategies via UI
+ Integrate more exchanges (Coinbase, Kraken)
+ Support for 1h/4h candles
+ WebSocket streaming for real-time charts
+ Deployment support: shinyapps.io, Shiny Server
+ Portfolio-level backtesting
 
 📸 Screenshots
 
@@ -73,145 +149,113 @@ Overlay of indicators like MA and BBands
 
 <img width="1417" height="496" alt="{85ECE6D9-9F3C-4954-A309-2F54EF805331}" src="https://github.com/user-attachments/assets/95da1bef-6321-4ff2-ba91-1f439f8fe499" />
 
+📂 Example Use Cases
+Here's how different users can benefit from the app:
+💹 Retail Traders: Validate trading strategies like RSI or MACD crossovers before using them in real trading platforms.
+📊 Quant Analysts: Forecast crypto price trends using ARIMA and run batch backtests for statistical modeling.
+🎓 Researchers & Students: Use it as a sandbox to explore trading strategies, calculate risk metrics, or include visual results in academic papers.
+📈 Data-Driven Investors: Identify historically high-performing strategies, analyze trade logs, and tune portfolio parameters offline.
+
+📤 Export & Reporting
+You can export most outputs directly or customize the app for deeper reporting:
+
+Exportable Content	Format / Method
+Trade Logs	Downloadable CSV via DT table
+Performance Tables	Copy or customize with export buttons
+Forecast Charts	Exportable via Plotly UI
+Strategy Results	View or copy from optimization tables
+
+Pro Tip: Add write.csv() or ggsave() in app.R to automate report saving.
+
+🔌 Extensibility & Customization
+This project is structured to support future development and advanced use:
+➕ Add New Strategies
+Implement new logic in the run_strategy() block
+Add indicator calculations in the indicator engine
+Update UI inputs and plotting code
+
+🔗 Integrate Other Data Sources
+Replace or supplement Binance/Yahoo API with:
+CoinGecko
+Alpha Vantage
+Local CSVs or REST APIs
+
+🎨 UI Theming
+Add bslib or shinythemes for dark/light themes
+Use custom HTML/CSS for branding or layout tweaks
+
+🧱 Modular Codebase
+Although it’s a single app.R, it can be split into:
+ui.R / server.R
+/modules/ for strategies and plotting
+/utils/ for helpers and API calls
+
+🧪 Testing & Validation
+While the app is not bundled with unit tests, you can validate components by:
+Using testthat or shinytest2 for automated tests
+Verifying strategy logic on known patterns
+Cross-checking forecast outputs against external models
+Logging intermediate values via DEBUG_MODE = TRUE
+
+🔐 Security Considerations
+This app is read-only and client-safe by default:
+No write/delete endpoints
+
+Local SQLite database (no cloud data writes)
+Uses public, anonymous APIs (no secret keys)
+Input sanitization is handled for all UI fields
+
+If deploying to a public server:
+
+Consider rate-limiting or caching API response
+Add shiny::req() and validate() checks
+Set up access restrictions or authentication
+
+🚀 Deployment Options
+Although this is currently for local use, it can be deployed via:
+
+| Platform         | Notes                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------- |
+| **shinyapps.io** | Easiest hosted deployment. May need to bundle `crypto_data.sqlite` or disable DB caching. |
+| **Shiny Server** | Great for intranet / self-hosting. Place app in `/srv/shiny-server/`.                     |
+| **Docker**       | Build a containerized version for reliable deployment. Add `Dockerfile` and dependencies. |
 
 
-🧱 Tech Stack
-Language: R
+❓ FAQ
+🔧 Do I need Binance API keys?
+No. It uses public endpoints — no authentication is required.
 
-Core Libraries:
+🔒 Licensing
+This project is closed-source and not licensed for distribution.
 
-UI & Server: shiny, shinycssloaders
+💾 Where is the data stored?
+All fetched data (live & historical) is stored locally in a file called crypto_data.sqlite.
 
-Charts: plotly, ggplot2
+🕒 How frequently is price data updated?
+Every 30 seconds, but you can change this via the LIVE_REFRESH_INTERVAL constant.
 
-Time Series & Indicators: quantmod, TTR, forecast, xts
+📉 Can I add my own strategy?
+Not yet — but it's on the roadmap. Future versions may allow user-defined logic or scripting via UI/code modules.
 
-Data Handling: dplyr, lubridate, PerformanceAnalytics
+🧪 Is this suitable for real trading?
+It’s designed for analysis and simulation only. While the calculations simulate real-world conditions (e.g., slippage, lag), you should not use it to execute trades directly.
 
-API/Web: httr2, jsonlite
+🧠 What data frequency is used?
+Only daily OHLCV data is used for forecasting and backtesting.
 
-Storage: RSQLite, DBI
+🔁 Will intraday support be added?
+Yes, it's on the roadmap to support 1h and 4h candles in future updates.
 
-Tables: DT
+🚀 How do I deploy this online?
+Deployment instructions (via shinyapps.io or Shiny Server) will be added in a future version.
 
-Database: Local SQLite file (crypto_data.sqlite) for caching historical and live data
+📬 Can I contribute?
+The project is currently closed-source, but feel free to reach out for collaboration or testing opportunities.
 
-🛠 Installation
-Install R and RStudio
-
-Save the project file as app.R
-
-Open app.R in RStudio
-
-In R console, install dependencies:
-
-r
-Copy
-Edit
-install.packages(c("shiny", "quantmod", "forecast", "ggplot2", "dplyr", "lubridate", "xts", 
-                   "httr2", "jsonlite", "RSQLite", "DBI", "TTR", "plotly", 
-                   "PerformanceAnalytics", "scales", "DT", "shinycssloaders"))
-Click Run App in RStudio or run manually:
-
-r
-Copy
-Edit
-shiny::runApp("path/to/your/app_directory")
-OS Compatibility: Windows, macOS, Linux
-
-🚀 Usage
-Launch the app via RStudio or CLI.
-
-In browser:
-
-Choose a cryptocurrency from sidebar
-
-Go to the Strategy Analysis tab
-
-Select a strategy and date range
-
-Click Run Backtest
-
-Explore:
-
-Candlestick charts with trade markers
-
-Performance stats
-
-Trade logs and optimization tables
-
-Inputs:
-
-Strategy selection
-
-Parameter tuning (RSI, MA, etc.)
-
-Commission/slippage
-
-Crypto asset & date range
-
-Outputs:
-
-Live price line charts
-
-Forecast plots
-
-Backtest result charts
-
-Performance and trade tables
-
-⚙️ Configuration
-No API keys required — uses public Binance & Yahoo Finance endpoints
-
-Customizable Parameters:
-
-In code: LIVE_REFRESH_INTERVAL, DEBUG_MODE, DB_FILE
-
-In UI: Strategy parameters, trading costs, filters
-
-📁 Project Structure
-Single file: app.R contains everything — UI, server logic, helper functions
-
-Database: crypto_data.sqlite auto-created to cache fetched data
-
-🧩 Limitations
-📉 Overfitting Risk: Parameter optimization may not generalize well
-
-🌐 API Dependency: Changes to Binance or Yahoo API could break functionality
-
-🕒 Live Data Lag: Updates only every 30 seconds (not real-time streaming)
-
-🚧 Single-threaded: Long computations (like optimization) freeze the UI temporarily
-
-⏱️ No Intraday Support: Backtesting and forecasting use daily OHLCV data only
-
-🌱 Roadmap
-Add advanced strategies (e.g. Ichimoku Cloud, SuperTrend)
-
-Enable custom user-defined strategy logic
-
-Integrate additional exchanges (Coinbase, Kraken, Bybit)
-
-Intraday backtesting support (1h, 4h candles)
-
-WebSocket integration for live streaming
-
-Deployment guide for shinyapps.io or Shiny Server
-
-Portfolio-level backtesting & rebalancing
+📬 Contact
+Have questions or want a demo? Reach out at:
+📧 shreyassunil010@gmail.com
+🌐 LinkedIn Profile : https://www.linkedin.com/in/shreyas-sunil-2a44b2321/
 
 
-csharp
-Copy
-Edit
-This project is currently closed-source and not licensed for distribution.
-✉️ Contact
-Include your GitHub or email (optional), or leave this section out.
 
-Let me know if you want this as a downloadable .md file or want changes like:
-
-Making it more beginner-friendly
-
-Adding command-line usage examples
-
-Integrating screenshots or demo GIFs
