@@ -125,12 +125,19 @@ crypto-dashboard/
 ⏱️ No intraday backtesting yet (daily OHLCV only)
 
 🗺️ Roadmap
+ 
  Add advanced indicators (Ichimoku, SuperTrend)
+ 
  Enable custom strategies via UI
+ 
  Integrate more exchanges (Coinbase, Kraken)
+ 
  Support for 1h/4h candles
+ 
  WebSocket streaming for real-time charts
+ 
  Deployment support: shinyapps.io, Shiny Server
+ 
  Portfolio-level backtesting
 
 📸 Screenshots
@@ -151,19 +158,28 @@ crypto-dashboard/
 <img width="1417" height="496" alt="{85ECE6D9-9F3C-4954-A309-2F54EF805331}" src="https://github.com/user-attachments/assets/95da1bef-6321-4ff2-ba91-1f439f8fe499" />
 
 📂 Example Use Cases
+
 Here's how different users can benefit from the app:
+
 💹 Retail Traders: Validate trading strategies like RSI or MACD crossovers before using them in real trading platforms.
+
 📊 Quant Analysts: Forecast crypto price trends using ARIMA and run batch backtests for statistical modeling.
+
 🎓 Researchers & Students: Use it as a sandbox to explore trading strategies, calculate risk metrics, or include visual results in academic papers.
+
 📈 Data-Driven Investors: Identify historically high-performing strategies, analyze trade logs, and tune portfolio parameters offline.
 
 📤 Export & Reporting
 You can export most outputs directly or customize the app for deeper reporting:
 
 Exportable Content	Format / Method
+
 Trade Logs	Downloadable CSV via DT table
+
 Performance Tables	Copy or customize with export buttons
+
 Forecast Charts	Exportable via Plotly UI
+
 Strategy Results	View or copy from optimization tables
 
 Pro Tip: Add write.csv() or ggsave() in app.R to automate report saving.
